@@ -1,8 +1,12 @@
 import os
 import requests
+import httpx
 from uuid import UUID
+from typing import Optional
 from fastapi import FastAPI, HTTPException
 from concurrent.futures import ThreadPoolExecutor
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 # Composite models
 from models.composite_models import (
@@ -40,8 +44,49 @@ app = FastAPI(
     version="1.0.0",
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # In-memory mapping
 ITEM_SELLER_MAP: dict[UUID, UUID] = {}
+
+class GoogleLoginRequest(BaseModel):
+    email: str
+    username: str
+    full_name: Optional[str] = None
+    avatar_url: Optional[str] = None
+    google_token: str
+
+@app.post("/login/google")
+def login_with_google(login_data: GoogleLoginRequest):
+    try:
+        response = httpx.get(f"{USER_SERVICE_URL}/users/by_email/{login_data.email}")
+        
+        if response.status_code == 200:
+            return response.json()
+            
+    except Exception:
+        pass
+
+    new_user_payload = {
+        "email": login_data.email,
+        "username": login_data.username,
+        "full_name": login_data.full_name,
+        "avatar_url": login_data.avatar_url,
+        "phone": "000-000-0000"
+    }
+
+    try:
+        create_response = httpx.post(f"{USER_SERVICE_URL}/users", json=new_user_payload)
+        create_response.raise_for_status() 
+        return create_response.json()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ======================================================
 # User API
