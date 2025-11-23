@@ -13,6 +13,18 @@ from models.composite_models import (
     CompositeTransactionCreate,
 )
 
+# ============================
+# Load Microservice URLs
+# ============================
+USER_SERVICE_URL = os.getenv("USER_SERVICE_URL")
+LISTING_SERVICE_URL = os.getenv("LISTING_SERVICE_URL")
+TRANSACTION_SERVICE_URL = os.getenv("TRANSACTION_SERVICE_URL")
+
+if not USER_SERVICE_URL or not LISTING_SERVICE_URL or not TRANSACTION_SERVICE_URL:
+    raise RuntimeError(
+        "Missing required environment variables: USER_SERVICE_URL / LISTING_SERVICE_URL / TRANSACTION_SERVICE_URL"
+    )
+
 # Service adapters
 from services.user_service import get_user
 from services.listing_service import get_item, list_items
@@ -28,11 +40,8 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# ======================================================
-# In-memory logical foreign key: item_id → seller_id
-# ======================================================
+# In-memory mapping
 ITEM_SELLER_MAP: dict[UUID, UUID] = {}
-
 
 # ======================================================
 # User API
@@ -45,20 +54,16 @@ def get_composite_user(user_id: UUID):
         raise HTTPException(status_code=404, detail="User not found")
 
 
-# ======================================================
-# Create item mapping: seller → item
-# ======================================================
+# Create item mapping
 @app.post("/composite/items", response_model=CompositeItem)
 def create_composite_item(seller_id: UUID, item_id: UUID):
     ITEM_SELLER_MAP[item_id] = seller_id
 
-    # Validate seller
     try:
         get_user(seller_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Seller does not exist")
 
-    # Validate item
     try:
         item = get_item(item_id, seller_id)
     except ValueError:
@@ -67,9 +72,6 @@ def create_composite_item(seller_id: UUID, item_id: UUID):
     return item
 
 
-# ======================================================
-# Get single item
-# ======================================================
 @app.get("/composite/items/{item_id}", response_model=CompositeItem)
 def get_composite_item(item_id: UUID):
     seller_id = ITEM_SELLER_MAP.get(item_id)
@@ -82,26 +84,18 @@ def get_composite_item(item_id: UUID):
         raise HTTPException(status_code=404, detail="Item not found")
 
 
-# ======================================================
-# List all items
-# ======================================================
 @app.get("/composite/items", response_model=list[CompositeItem])
 def list_composite_items():
     return list_items(ITEM_SELLER_MAP)
 
 
-# ======================================================
-# List items by category
-# ======================================================
 @app.get("/composite/categories/{category_id}/items", response_model=list[CompositeItem])
 def get_items_by_category(category_id: UUID):
     all_items = list_items(ITEM_SELLER_MAP)
-
-    filtered = [
+    return [
         item for item in all_items
         if item.category and item.category.id == category_id
     ]
-    return filtered
 
 
 # ======================================================
@@ -109,21 +103,19 @@ def get_items_by_category(category_id: UUID):
 # ======================================================
 @app.get("/composite/users/{user_id}/wallet")
 def get_user_with_wallet(user_id: UUID):
+    # Get user
     try:
         user = get_user(user_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="User not found")
 
+    # Get wallet
     wallet_obj = None
     try:
-        wallets = requests.get(
-            f"{os.getenv('TRANSACTION_SERVICE_URL', 'http://localhost:8003')}/wallets"
-        ).json()
-
+        wallets = requests.get(f"{TRANSACTION_SERVICE_URL}/wallets").json()
         wallet = next((w for w in wallets if w["user_id"] == str(user_id)), None)
         if wallet:
             wallet_obj = CompositeWallet(**wallet)
-
     except Exception:
         wallet_obj = None
 
@@ -135,25 +127,25 @@ def get_user_with_wallet(user_id: UUID):
 # ======================================================
 @app.post("/composite/transactions", response_model=CompositeTransaction)
 def create_composite_transaction(payload: CompositeTransactionCreate):
-    # Validate buyer & seller
+
+    # Validate buyer/seller
     try:
         buyer = get_user(payload.buyer_id)
         seller = get_user(payload.seller_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Buyer or seller not found")
 
-    # Validate FK consistency
+    # Validate item seller FK
     fk_seller_id = ITEM_SELLER_MAP.get(payload.item_id)
     if fk_seller_id != payload.seller_id:
         raise HTTPException(status_code=400, detail="Item does not belong to this seller")
 
-    # Get item with seller injected
+    # Get item
     try:
         item = get_item(payload.item_id, payload.seller_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Item not found")
 
-    # IMPORTANT — Add title & price snapshots
     enriched_payload = {
         "buyer_id": payload.buyer_id,
         "seller_id": payload.seller_id,
@@ -163,7 +155,6 @@ def create_composite_transaction(payload: CompositeTransactionCreate):
         "price_snapshot": item.price,
     }
 
-    # Create transaction in Transaction Service
     tx_raw = create_transaction(enriched_payload)
 
     return CompositeTransaction(
@@ -182,7 +173,7 @@ def create_composite_transaction(payload: CompositeTransactionCreate):
 # ======================================================
 @app.post("/composite/transactions/{tx_id}/checkout")
 def checkout_transaction(tx_id: UUID):
-    url = f"{os.getenv('TRANSACTION_SERVICE_URL', 'http://localhost:8003')}/transactions/{tx_id}/checkout"
+    url = f"{TRANSACTION_SERVICE_URL}/transactions/{tx_id}/checkout"
     r = requests.post(url)
 
     if r.status_code == 404:
@@ -193,7 +184,7 @@ def checkout_transaction(tx_id: UUID):
 
 
 # ======================================================
-# Get Transaction w/ parallel execution (threads)
+# Get Transaction (parallel)
 # ======================================================
 executor = ThreadPoolExecutor(max_workers=5)
 
@@ -208,14 +199,10 @@ def get_composite_transaction(tx_id: UUID):
     seller_id = UUID(tx_raw["seller_id"])
     item_id = UUID(tx_raw["item_id"])
 
-    # Parallel tasks
-    future_buyer = executor.submit(get_user, buyer_id)
-    future_seller = executor.submit(get_user, seller_id)
-    future_item = executor.submit(get_item, item_id, seller_id)
-
-    buyer = future_buyer.result()
-    seller = future_seller.result()
-    item = future_item.result()
+    # Parallel queries
+    buyer = executor.submit(get_user, buyer_id).result()
+    seller = executor.submit(get_user, seller_id).result()
+    item = executor.submit(get_item, item_id, seller_id).result()
 
     return CompositeTransaction(
         id=tx_raw["id"],
@@ -234,3 +221,9 @@ def get_composite_transaction(tx_id: UUID):
 @app.get("/")
 def root():
     return {"message": "Composite Microservice Running"}
+
+
+# Cloud Run entry
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
