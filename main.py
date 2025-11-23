@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException
 from concurrent.futures import ThreadPoolExecutor
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from urllib.parse import quote
 
 from models.composite_models import (
     CompositeUser,
@@ -26,9 +27,7 @@ raw_transaction_url = os.getenv("TRANSACTION_SERVICE_URL")
 TRANSACTION_SERVICE_URL = raw_transaction_url.rstrip("/") if raw_transaction_url else None
 
 if not USER_SERVICE_URL or not LISTING_SERVICE_URL or not TRANSACTION_SERVICE_URL:
-    raise RuntimeError(
-        "Missing required environment variables: USER_SERVICE_URL / LISTING_SERVICE_URL / TRANSACTION_SERVICE_URL"
-    )
+    raise RuntimeError("Missing required environment variables: USER_SERVICE_URL / LISTING_SERVICE_URL / TRANSACTION_SERVICE_URL")
 
 from services.user_service import get_user
 from services.listing_service import get_item, list_items
@@ -63,12 +62,11 @@ class GoogleLoginRequest(BaseModel):
 
 @app.post("/login/google")
 def login_with_google(login_data: GoogleLoginRequest):
+    encoded_email = quote(login_data.email)
     try:
-        response = httpx.get(f"{USER_SERVICE_URL}/users/by_email/{login_data.email}")
-        
+        response = httpx.get(f"{USER_SERVICE_URL}/users/by_email/{encoded_email}")
         if response.status_code == 200:
             return response.json()
-            
     except Exception:
         pass
 
@@ -83,7 +81,7 @@ def login_with_google(login_data: GoogleLoginRequest):
 
     try:
         create_response = httpx.post(f"{USER_SERVICE_URL}/users", json=new_user_payload)
-        create_response.raise_for_status() 
+        create_response.raise_for_status()
         return create_response.json()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -98,17 +96,14 @@ def get_composite_user(user_id: UUID):
 @app.post("/composite/items", response_model=CompositeItem)
 def create_composite_item(seller_id: UUID, item_id: UUID):
     ITEM_SELLER_MAP[item_id] = seller_id
-
     try:
         get_user(seller_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Seller does not exist")
-
     try:
         item = get_item(item_id, seller_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Item not found")
-
     return item
 
 @app.get("/composite/items/{item_id}", response_model=CompositeItem)
@@ -116,7 +111,6 @@ def get_composite_item(item_id: UUID):
     seller_id = ITEM_SELLER_MAP.get(item_id)
     if seller_id is None:
         raise HTTPException(status_code=404, detail="Seller not assigned for this item")
-
     try:
         return get_item(item_id, seller_id)
     except ValueError:
@@ -129,10 +123,7 @@ def list_composite_items():
 @app.get("/composite/categories/{category_id}/items", response_model=list[CompositeItem])
 def get_items_by_category(category_id: UUID):
     all_items = list_items(ITEM_SELLER_MAP)
-    return [
-        item for item in all_items
-        if item.category and item.category.id == category_id
-    ]
+    return [item for item in all_items if item.category and item.category.id == category_id]
 
 @app.get("/composite/users/{user_id}/wallet")
 def get_user_with_wallet(user_id: UUID):
@@ -140,7 +131,6 @@ def get_user_with_wallet(user_id: UUID):
         user = get_user(user_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="User not found")
-
     wallet_obj = None
     try:
         wallets = requests.get(f"{TRANSACTION_SERVICE_URL}/wallets").json()
@@ -149,7 +139,6 @@ def get_user_with_wallet(user_id: UUID):
             wallet_obj = CompositeWallet(**wallet)
     except Exception:
         wallet_obj = None
-
     return {"user": user, "wallet": wallet_obj}
 
 @app.post("/composite/transactions", response_model=CompositeTransaction)
@@ -194,10 +183,8 @@ def create_composite_transaction(payload: CompositeTransactionCreate):
 def checkout_transaction(tx_id: UUID):
     url = f"{TRANSACTION_SERVICE_URL}/transactions/{tx_id}/checkout"
     r = requests.post(url)
-
     if r.status_code == 404:
         raise HTTPException(status_code=404, detail="Transaction not found")
-
     r.raise_for_status()
     return r.json()
 
