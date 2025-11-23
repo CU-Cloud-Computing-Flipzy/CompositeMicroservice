@@ -75,8 +75,7 @@ def login_with_google(login_data: GoogleLoginRequest):
         "username": login_data.username,
         "full_name": login_data.full_name,
         "avatar_url": login_data.avatar_url,
-        "phone": "000-000-0000",
-        "password": "GOOGLE_OAUTH_DUMMY_PASSWORD"
+        "phone": "000-000-0000"
     }
 
     try:
