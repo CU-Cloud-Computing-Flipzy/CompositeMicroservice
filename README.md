@@ -72,7 +72,4 @@ Stores logistics / contact addresses. One-to-many relationship with **User**.
 
 ---
 
-## End
-This documentation covers database structure and RESTful API definitions for a user & address management service.
-
 
