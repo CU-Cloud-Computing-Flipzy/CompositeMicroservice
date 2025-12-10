@@ -60,24 +60,23 @@ class GoogleLoginRequest(BaseModel):
     avatar_url: Optional[str] = None
     google_token: str
 
-
 class NewItemPayload(BaseModel):
-    seller_id: UUID
+    seller_id: str  
     item: dict
 
 @app.post("/composite/items/create", response_model=CompositeItem)
 def create_item_from_frontend(data: NewItemPayload):
     listing_res = httpx.post(f"{LISTING_SERVICE_URL}/items", json=data.item)
-    if listing_res.status_code != 201:
-        raise HTTPException(status_code=500, detail="Failed to create item in Listing Service")
 
-    created_item = listing_res.json()
-    item_id = UUID(created_item["id"])
+    if listing_res.status_code != 201:
+        raise HTTPException(status_code=listing_res.status_code, detail="Failed to create item in Listing Service")
+
+    created = listing_res.json()
+    item_id = UUID(created["id"])
 
     ITEM_SELLER_MAP[item_id] = data.seller_id
 
-    seller = get_user(data.seller_id)
-    composite_item = CompositeItem(**created_item, seller=seller)
+    composite_item = CompositeItem(**created)
     return composite_item
 
 
@@ -90,6 +89,7 @@ def login_with_google(login_data: GoogleLoginRequest):
             return response.json()
     except Exception:
         pass
+
     new_user_payload = {
         "email": login_data.email,
         "username": login_data.username,
@@ -97,9 +97,11 @@ def login_with_google(login_data: GoogleLoginRequest):
         "avatar_url": login_data.avatar_url,
         "phone": "000-000-0000"
     }
+
     create_response = httpx.post(f"{USER_SERVICE_URL}/users", json=new_user_payload)
     create_response.raise_for_status()
     return create_response.json()
+
 
 @app.get("/composite/users/{user_id}", response_model=CompositeUser)
 def get_composite_user(user_id: UUID):
@@ -108,37 +110,46 @@ def get_composite_user(user_id: UUID):
     except ValueError:
         raise HTTPException(status_code=404, detail="User not found")
 
+
 @app.post("/composite/items", response_model=CompositeItem)
 def create_composite_item(seller_id: UUID, item_id: UUID):
     ITEM_SELLER_MAP[item_id] = seller_id
+
     try:
         get_user(seller_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Seller does not exist")
+
     try:
         item = get_item(item_id, seller_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Item not found")
+
     return item
+
 
 @app.get("/composite/items/{item_id}", response_model=CompositeItem)
 def get_composite_item(item_id: UUID):
     seller_id = ITEM_SELLER_MAP.get(item_id)
     if seller_id is None:
         raise HTTPException(status_code=404, detail="Seller not assigned for this item")
+
     try:
         return get_item(item_id, seller_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Item not found")
 
+
 @app.get("/composite/items", response_model=list[CompositeItem])
 def list_composite_items():
     return list_items(ITEM_SELLER_MAP)
+
 
 @app.get("/composite/categories/{category_id}/items", response_model=list[CompositeItem])
 def get_items_by_category(category_id: UUID):
     all_items = list_items(ITEM_SELLER_MAP)
     return [item for item in all_items if item.category and item.category.id == category_id]
+
 
 @app.get("/composite/users/{user_id}/wallet")
 def get_user_with_wallet(user_id: UUID):
@@ -146,7 +157,9 @@ def get_user_with_wallet(user_id: UUID):
         user = get_user(user_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="User not found")
+
     wallet_obj = None
+
     try:
         wallets = requests.get(f"{TRANSACTION_SERVICE_URL}/wallets").json()
         wallet = next((w for w in wallets if w["user_id"] == str(user_id)), None)
@@ -154,7 +167,9 @@ def get_user_with_wallet(user_id: UUID):
             wallet_obj = CompositeWallet(**wallet)
     except Exception:
         wallet_obj = None
+
     return {"user": user, "wallet": wallet_obj}
+
 
 @app.post("/composite/transactions", response_model=CompositeTransaction)
 def create_composite_transaction(payload: CompositeTransactionCreate):
@@ -194,6 +209,7 @@ def create_composite_transaction(payload: CompositeTransactionCreate):
         created_at=tx_raw["created_at"],
     )
 
+
 @app.post("/composite/transactions/{tx_id}/checkout")
 def checkout_transaction(tx_id: UUID):
     url = f"{TRANSACTION_SERVICE_URL}/transactions/{tx_id}/checkout"
@@ -203,7 +219,9 @@ def checkout_transaction(tx_id: UUID):
     r.raise_for_status()
     return r.json()
 
+
 executor = ThreadPoolExecutor(max_workers=5)
+
 
 @app.get("/composite/transactions/{tx_id}", response_model=CompositeTransaction)
 def get_composite_transaction(tx_id: UUID):
@@ -230,9 +248,11 @@ def get_composite_transaction(tx_id: UUID):
         created_at=tx_raw["created_at"],
     )
 
+
 @app.get("/")
 def root():
     return {"message": "Composite Microservice Running"}
+
 
 if __name__ == "__main__":
     import uvicorn
