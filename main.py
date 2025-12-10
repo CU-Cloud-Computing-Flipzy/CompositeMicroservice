@@ -60,6 +60,27 @@ class GoogleLoginRequest(BaseModel):
     avatar_url: Optional[str] = None
     google_token: str
 
+
+class NewItemPayload(BaseModel):
+    seller_id: UUID
+    item: dict
+
+@app.post("/composite/items/create", response_model=CompositeItem)
+def create_item_from_frontend(data: NewItemPayload):
+    listing_res = httpx.post(f"{LISTING_SERVICE_URL}/items", json=data.item)
+    if listing_res.status_code != 201:
+        raise HTTPException(status_code=500, detail="Failed to create item in Listing Service")
+
+    created_item = listing_res.json()
+    item_id = UUID(created_item["id"])
+
+    ITEM_SELLER_MAP[item_id] = data.seller_id
+
+    seller = get_user(data.seller_id)
+    composite_item = CompositeItem(**created_item, seller=seller)
+    return composite_item
+
+
 @app.post("/login/google")
 def login_with_google(login_data: GoogleLoginRequest):
     encoded_email = quote(login_data.email)
@@ -69,7 +90,6 @@ def login_with_google(login_data: GoogleLoginRequest):
             return response.json()
     except Exception:
         pass
-
     new_user_payload = {
         "email": login_data.email,
         "username": login_data.username,
@@ -77,13 +97,9 @@ def login_with_google(login_data: GoogleLoginRequest):
         "avatar_url": login_data.avatar_url,
         "phone": "000-000-0000"
     }
-
-    try:
-        create_response = httpx.post(f"{USER_SERVICE_URL}/users", json=new_user_payload)
-        create_response.raise_for_status()
-        return create_response.json()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    create_response = httpx.post(f"{USER_SERVICE_URL}/users", json=new_user_payload)
+    create_response.raise_for_status()
+    return create_response.json()
 
 @app.get("/composite/users/{user_id}", response_model=CompositeUser)
 def get_composite_user(user_id: UUID):
