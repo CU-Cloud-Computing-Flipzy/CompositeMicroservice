@@ -9,7 +9,10 @@ from models.composite_models import (
     CompositeMedia
 )
 
-LISTING_SERVICE = os.getenv("LISTING_SERVICE_URL", "http://localhost:8002")
+LISTING_SERVICE = os.getenv(
+    "LISTING_SERVICE_URL",
+    "https://listing-service-425935075553.us-central1.run.app"
+)
 
 
 def get_item(item_id: UUID, seller_id: Optional[UUID] = None) -> CompositeItem:

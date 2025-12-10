@@ -20,8 +20,11 @@ from models.composite_models import (
 raw_user_url = os.getenv("USER_SERVICE_URL")
 USER_SERVICE_URL = raw_user_url.rstrip("/") if raw_user_url else None
 
-raw_listing_url = os.getenv("LISTING_SERVICE_URL")
-LISTING_SERVICE_URL = raw_listing_url.rstrip("/") if raw_listing_url else None
+raw_listing_url = os.getenv(
+    "LISTING_SERVICE_URL",
+    "https://listing-service-425935075553.us-central1.run.app"
+)
+LISTING_SERVICE_URL = raw_listing_url.rstrip("/")
 
 raw_transaction_url = os.getenv("TRANSACTION_SERVICE_URL")
 TRANSACTION_SERVICE_URL = raw_transaction_url.rstrip("/") if raw_transaction_url else None
