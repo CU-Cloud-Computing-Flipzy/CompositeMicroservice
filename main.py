@@ -68,46 +68,49 @@ class CreateItemPayload(BaseModel):
     category_id: UUID
     media_ids: List[UUID] = []
 
+
+
 @app.post("/composite/items/create", response_model=CompositeItem)
-def create_item(payload: CreateItemPayload):
+def create_item_from_frontend(
+    # 1. Accept individual Form fields matches your Frontend .append() keys
+    seller_id: str = Form(...),
+    name: str = Form(...),
+    price: Decimal = Form(...),
+    description: str = Form(...),
+    status: str = Form(...),
+    condition: str = Form(...),
+    category_id: str = Form(...),
+    file: UploadFile | None = File(None) 
+):
 
-    cat_res = httpx.get(f"{LISTING_SERVICE_URL}/categories/{payload.category_id}")
-    if cat_res.status_code != 200:
-        raise HTTPException(400, "Category not found")
-    category = cat_res.json()
-
-    media = []
-    for mid in payload.media_ids:
-        m_res = httpx.get(f"{LISTING_SERVICE_URL}/media/{mid}")
-        if m_res.status_code != 200:
-            raise HTTPException(400, f"Media {mid} not found")
-        media.append(m_res.json())
-
-    listing_payload = {
-        "name": payload.name,
-        "description": payload.description,
-        "price": str(payload.price),
-        "category": category,
-        "media": media,
+    listing_service_payload = {
+        "name": name,
+        "description": description,
+        "price": float(price),
+        "status": status,
+        "condition": condition,
+        "category": {
+            "id": category_id  
+        },
+        "media": [] 
     }
 
-    listing_res = httpx.post(
-        f"{LISTING_SERVICE_URL}/items",
-        json=listing_payload,
-    )
+    listing_res = httpx.post(f"{LISTING_SERVICE_URL}/items", json=listing_service_payload)
 
-    if listing_res.status_code != 201:
+    if listing_res.status_code not in [200, 201]:
+        print("Listing Service Error:", listing_res.text) 
         raise HTTPException(
             status_code=listing_res.status_code,
-            detail=listing_res.text,
+            detail="Failed to create item in Listing Service",
         )
 
     created = listing_res.json()
     item_id = UUID(created["id"])
 
-    ITEM_SELLER_MAP[item_id] = payload.seller_id
+    seller_uuid = UUID(seller_id)
+    ITEM_SELLER_MAP[item_id] = seller_uuid
 
-    return get_item(item_id, payload.seller_id)
+    return get_item(item_id, seller_uuid)
 
 @app.post("/login/google")
 def login_with_google(login_data: GoogleLoginRequest):
