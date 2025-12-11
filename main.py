@@ -36,6 +36,10 @@ from services.transaction_service import (
     create_transaction,
     get_transaction,
 )
+from fastapi import APIRouter, HTTPException, Form, File, UploadFile
+from uuid import UUID
+import httpx
+from decimal import Decimal
 
 app = FastAPI(
     title="Composite Service",
@@ -70,9 +74,9 @@ class CreateItemPayload(BaseModel):
 
 
 
+
 @app.post("/composite/items/create", response_model=CompositeItem)
 def create_item_from_frontend(
-    # 1. Accept individual Form fields matches your Frontend .append() keys
     seller_id: str = Form(...),
     name: str = Form(...),
     price: Decimal = Form(...),
