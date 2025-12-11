@@ -7,6 +7,7 @@ from decimal import Decimal
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
+from pydantic import BaseModel
 
 from fastapi import FastAPI, HTTPException, Form, File, UploadFile, Depends
 from fastapi.middleware.cors import CORSMiddleware
