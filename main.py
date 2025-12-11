@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 import jwt
 
-from composite_models import (
+from models.composite_models import (
     CompositeUser,
     CompositeItem,
     CompositeWallet,
