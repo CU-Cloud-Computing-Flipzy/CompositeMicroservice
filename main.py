@@ -7,6 +7,7 @@ from decimal import Decimal
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
+from pydantic import BaseModel
 
 from fastapi import FastAPI, HTTPException, Form, File, UploadFile, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -186,7 +187,7 @@ def create_item_from_frontend(
     status: str = Form(...),
     condition: str = Form(...),
     category_id: str = Form(...),
-    file: UploadFile | None = File(None),
+    file: Optional[UploadFile] = File(None),
     claims=Depends(verify_jwt)
 ):
     """Create item in listing service (JWT protected)."""
