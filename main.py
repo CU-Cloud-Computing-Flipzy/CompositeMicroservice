@@ -66,17 +66,25 @@ class NewItemPayload(BaseModel):
 
 @app.post("/composite/items/create", response_model=CompositeItem)
 def create_item_from_frontend(data: NewItemPayload):
+    # 1) Forward the item payload to Listing Service
     listing_res = httpx.post(f"{LISTING_SERVICE_URL}/items", json=data.item)
 
     if listing_res.status_code != 201:
-        raise HTTPException(status_code=listing_res.status_code, detail="Failed to create item in Listing Service")
+        raise HTTPException(
+            status_code=listing_res.status_code,
+            detail="Failed to create item in Listing Service",
+        )
 
     created = listing_res.json()
     item_id = UUID(created["id"])
 
-    ITEM_SELLER_MAP[item_id] = data.seller_id
+    # 2) Record logical foreign key: which seller owns this item
+    #    Make sure we store a real UUID, not a plain string
+    seller_uuid = UUID(str(data.seller_id))
+    ITEM_SELLER_MAP[item_id] = seller_uuid
 
-    composite_item = CompositeItem(**created)
+    # 3) Reuse existing helper to build a proper CompositeItem
+    composite_item = get_item(item_id, seller_uuid)
     return composite_item
 
 
