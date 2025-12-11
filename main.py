@@ -2,7 +2,7 @@ import os
 import requests
 import httpx
 from uuid import UUID
-from typing import Optional
+from typing import Optional, List
 from fastapi import FastAPI, HTTPException
 from concurrent.futures import ThreadPoolExecutor
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,7 +27,7 @@ raw_transaction_url = os.getenv("TRANSACTION_SERVICE_URL")
 TRANSACTION_SERVICE_URL = raw_transaction_url.rstrip("/") if raw_transaction_url else None
 
 if not USER_SERVICE_URL or not LISTING_SERVICE_URL or not TRANSACTION_SERVICE_URL:
-    raise RuntimeError("Missing required environment variables: USER_SERVICE_URL / LISTING_SERVICE_URL / TRANSACTION_SERVICE_URL")
+    raise RuntimeError("Missing required environment variables")
 
 from services.user_service import get_user
 from services.listing_service import get_item, list_items
@@ -39,7 +39,7 @@ from services.transaction_service import (
 
 app = FastAPI(
     title="Composite Service",
-    description="Aggregation layer for User, Listing, and Transaction microservices.",
+    description="Aggregation layer",
     version="1.0.0",
 )
 
@@ -60,37 +60,59 @@ class GoogleLoginRequest(BaseModel):
     avatar_url: Optional[str] = None
     google_token: str
 
-class NewItemPayload(BaseModel):
-    seller_id: str  
-    item: dict
+class CreateItemPayload(BaseModel):
+    seller_id: UUID
+    name: str
+    description: Optional[str] = ""
+    price: float
+    category_id: UUID
+    media_ids: List[UUID] = []
 
 @app.post("/composite/items/create", response_model=CompositeItem)
-def create_item_from_frontend(data: NewItemPayload):
-    # 1) Forward the item payload to Listing Service
-    listing_res = httpx.post(f"{LISTING_SERVICE_URL}/items", json=data.item)
+def create_item(payload: CreateItemPayload):
+
+    cat_res = httpx.get(f"{LISTING_SERVICE_URL}/categories/{payload.category_id}")
+    if cat_res.status_code != 200:
+        raise HTTPException(400, "Category not found")
+    category = cat_res.json()
+
+    media = []
+    for mid in payload.media_ids:
+        m_res = httpx.get(f"{LISTING_SERVICE_URL}/media/{mid}")
+        if m_res.status_code != 200:
+            raise HTTPException(400, f"Media {mid} not found")
+        media.append(m_res.json())
+
+    listing_payload = {
+        "name": payload.name,
+        "description": payload.description,
+        "price": str(payload.price),
+        "category": category,
+        "media": media,
+    }
+
+    listing_res = httpx.post(
+        f"{LISTING_SERVICE_URL}/items",
+        json=listing_payload,
+    )
 
     if listing_res.status_code != 201:
         raise HTTPException(
             status_code=listing_res.status_code,
-            detail="Failed to create item in Listing Service",
+            detail=listing_res.text,
         )
 
     created = listing_res.json()
     item_id = UUID(created["id"])
 
-    # 2) Record logical foreign key: which seller owns this item
-    #    Make sure we store a real UUID, not a plain string
-    seller_uuid = UUID(str(data.seller_id))
-    ITEM_SELLER_MAP[item_id] = seller_uuid
+    ITEM_SELLER_MAP[item_id] = payload.seller_id
 
-    # 3) Reuse existing helper to build a proper CompositeItem
-    composite_item = get_item(item_id, seller_uuid)
-    return composite_item
-
+    return get_item(item_id, payload.seller_id)
 
 @app.post("/login/google")
 def login_with_google(login_data: GoogleLoginRequest):
     encoded_email = quote(login_data.email)
+
     try:
         response = httpx.get(f"{USER_SERVICE_URL}/users/by_email/{encoded_email}")
         if response.status_code == 200:
@@ -110,93 +132,49 @@ def login_with_google(login_data: GoogleLoginRequest):
     create_response.raise_for_status()
     return create_response.json()
 
-
 @app.get("/composite/users/{user_id}", response_model=CompositeUser)
 def get_composite_user(user_id: UUID):
-    try:
-        return get_user(user_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="User not found")
-
-
-@app.post("/composite/items", response_model=CompositeItem)
-def create_composite_item(seller_id: UUID, item_id: UUID):
-    ITEM_SELLER_MAP[item_id] = seller_id
-
-    try:
-        get_user(seller_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Seller does not exist")
-
-    try:
-        item = get_item(item_id, seller_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Item not found")
-
-    return item
-
+    return get_user(user_id)
 
 @app.get("/composite/items/{item_id}", response_model=CompositeItem)
 def get_composite_item(item_id: UUID):
     seller_id = ITEM_SELLER_MAP.get(item_id)
-    if seller_id is None:
-        raise HTTPException(status_code=404, detail="Seller not assigned for this item")
-
-    try:
-        return get_item(item_id, seller_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Item not found")
-
+    if not seller_id:
+        raise HTTPException(404, "Seller not assigned")
+    return get_item(item_id, seller_id)
 
 @app.get("/composite/items", response_model=list[CompositeItem])
 def list_composite_items():
     return list_items(ITEM_SELLER_MAP)
 
-
 @app.get("/composite/categories/{category_id}/items", response_model=list[CompositeItem])
-def get_items_by_category(category_id: UUID):
-    all_items = list_items(ITEM_SELLER_MAP)
-    return [item for item in all_items if item.category and item.category.id == category_id]
-
+def items_by_category(category_id: UUID):
+    items = list_items(ITEM_SELLER_MAP)
+    return [i for i in items if i.category and i.category.id == category_id]
 
 @app.get("/composite/users/{user_id}/wallet")
-def get_user_with_wallet(user_id: UUID):
-    try:
-        user = get_user(user_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    wallet_obj = None
-
-    try:
-        wallets = requests.get(f"{TRANSACTION_SERVICE_URL}/wallets").json()
-        wallet = next((w for w in wallets if w["user_id"] == str(user_id)), None)
-        if wallet:
-            wallet_obj = CompositeWallet(**wallet)
-    except Exception:
-        wallet_obj = None
-
-    return {"user": user, "wallet": wallet_obj}
-
+def user_with_wallet(user_id: UUID):
+    user = get_user(user_id)
+    wallet = None
+    wallets = requests.get(f"{TRANSACTION_SERVICE_URL}/wallets").json()
+    for w in wallets:
+        if w["user_id"] == str(user_id):
+            wallet = CompositeWallet(**w)
+            break
+    return {"user": user, "wallet": wallet}
 
 @app.post("/composite/transactions", response_model=CompositeTransaction)
 def create_composite_transaction(payload: CompositeTransactionCreate):
-    try:
-        buyer = get_user(payload.buyer_id)
-        seller = get_user(payload.seller_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Buyer or seller not found")
 
-    fk_seller_id = ITEM_SELLER_MAP.get(payload.item_id)
-    if fk_seller_id != payload.seller_id:
-        raise HTTPException(status_code=400, detail="Item does not belong to this seller")
+    buyer = get_user(payload.buyer_id)
+    seller = get_user(payload.seller_id)
 
-    try:
-        item = get_item(payload.item_id, payload.seller_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Item not found")
+    if ITEM_SELLER_MAP.get(payload.item_id) != payload.seller_id:
+        raise HTTPException(400, "Item does not belong to seller")
 
-    enriched_payload = {
+    item = get_item(payload.item_id, payload.seller_id)
+
+    enriched = {
         "buyer_id": payload.buyer_id,
         "seller_id": payload.seller_id,
         "item_id": payload.item_id,
@@ -205,7 +183,7 @@ def create_composite_transaction(payload: CompositeTransactionCreate):
         "price_snapshot": item.price,
     }
 
-    tx_raw = create_transaction(enriched_payload)
+    tx_raw = create_transaction(enriched)
 
     return CompositeTransaction(
         id=tx_raw["id"],
@@ -217,50 +195,37 @@ def create_composite_transaction(payload: CompositeTransactionCreate):
         created_at=tx_raw["created_at"],
     )
 
-
 @app.post("/composite/transactions/{tx_id}/checkout")
-def checkout_transaction(tx_id: UUID):
-    url = f"{TRANSACTION_SERVICE_URL}/transactions/{tx_id}/checkout"
-    r = requests.post(url)
-    if r.status_code == 404:
-        raise HTTPException(status_code=404, detail="Transaction not found")
+def checkout(tx_id: UUID):
+    r = requests.post(f"{TRANSACTION_SERVICE_URL}/transactions/{tx_id}/checkout")
     r.raise_for_status()
     return r.json()
 
-
 executor = ThreadPoolExecutor(max_workers=5)
 
-
 @app.get("/composite/transactions/{tx_id}", response_model=CompositeTransaction)
-def get_composite_transaction(tx_id: UUID):
-    try:
-        tx_raw = get_transaction(tx_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Transaction not found")
+def get_tx(tx_id: UUID):
+    tx = get_transaction(tx_id)
 
-    buyer_id = UUID(tx_raw["buyer_id"])
-    seller_id = UUID(tx_raw["seller_id"])
-    item_id = UUID(tx_raw["item_id"])
-
-    buyer = executor.submit(get_user, buyer_id).result()
-    seller = executor.submit(get_user, seller_id).result()
-    item = executor.submit(get_item, item_id, seller_id).result()
+    buyer = executor.submit(get_user, UUID(tx["buyer_id"])).result()
+    seller = executor.submit(get_user, UUID(tx["seller_id"])).result()
+    item = executor.submit(
+        get_item, UUID(tx["item_id"]), UUID(tx["seller_id"])
+    ).result()
 
     return CompositeTransaction(
-        id=tx_raw["id"],
+        id=tx["id"],
         buyer=buyer,
         seller=seller,
         item=item,
-        price_snapshot=str(tx_raw["price_snapshot"]),
-        status=tx_raw["status"],
-        created_at=tx_raw["created_at"],
+        price_snapshot=str(tx["price_snapshot"]),
+        status=tx["status"],
+        created_at=tx["created_at"],
     )
-
 
 @app.get("/")
 def root():
-    return {"message": "Composite Microservice Running"}
-
+    return {"message": "Composite Service Running"}
 
 if __name__ == "__main__":
     import uvicorn
