@@ -109,7 +109,6 @@ def ensure_wallet_exists(user_id: UUID):
     Smart Helper: 
     1. Checks if wallet exists (GET).
     2. If missing, Creates it (POST).
-    3. Handles cases where it might exist but we missed it.
     """
     try:
         # 1. Check if wallet exists
@@ -123,8 +122,8 @@ def ensure_wallet_exists(user_id: UUID):
         print(f"Creating missing wallet for user {user_id}")
         create_res = requests.post(f"{TRANSACTION_SERVICE_URL}/wallets", json={"user_id": str(user_id)})
         
-        # If it fails with 400, it means "User already has a wallet" (Race condition fix)
         if create_res.status_code == 400:
+             # Race condition fallback
              res = requests.get(f"{TRANSACTION_SERVICE_URL}/wallets", params={"user_id": str(user_id)})
              return res.json()[0]
 
@@ -177,7 +176,7 @@ def list_composite_items():
 
 
 # ============================================================
-# Wallet & History Endpoints (Connects to Transaction Svc)
+# Wallet & History Endpoints
 # ============================================================
 
 @app.get("/composite/wallet")
@@ -188,7 +187,6 @@ def get_my_wallet_balance(claims=Depends(verify_jwt)):
     """
     user_id = claims.get("sub")
     
-    # Uses the smart helper to Get OR Create
     wallet = ensure_wallet_exists(user_id)
     if not wallet:
         raise HTTPException(500, "Could not load wallet")
@@ -201,13 +199,35 @@ def get_my_transactions(claims=Depends(verify_jwt)):
     """Fetch transaction history where the user is the BUYER."""
     user_id = claims.get("sub")
     try:
-        # Fetch transactions where I am the buyer
         res = requests.get(f"{TRANSACTION_SERVICE_URL}/transactions", params={"buyer_id": user_id})
         res.raise_for_status()
         return res.json()
     except Exception as e:
         print(f"History Error: {e}")
         return []
+
+class CompositeDeposit(BaseModel):
+    amount: Decimal
+
+@app.post("/composite/wallet/deposit")
+def deposit_money(payload: CompositeDeposit, claims=Depends(verify_jwt)):
+    """Add money to the logged-in user's wallet."""
+    user_id = claims.get("sub")
+    
+    wallet = ensure_wallet_exists(user_id)
+    if not wallet:
+        raise HTTPException(500, "Wallet not found")
+
+    try:
+        res = requests.post(
+            f"{TRANSACTION_SERVICE_URL}/wallets/{wallet['id']}/deposit",
+            json={"amount": str(payload.amount)}
+        )
+        res.raise_for_status()
+        return res.json()
+    except Exception as e:
+        print(f"Deposit failed: {e}")
+        raise HTTPException(500, "Deposit failed")
 
 
 # ============================================================
@@ -310,7 +330,6 @@ def create_composite_transaction(payload: CompositeTransactionCreate, claims=Dep
     seller = get_user(payload.seller_id)
     item = get_item(payload.item_id, payload.seller_id)
 
-    # Ensure both buyer and seller have wallets before starting!
     ensure_wallet_exists(payload.buyer_id)
     ensure_wallet_exists(payload.seller_id)
 
