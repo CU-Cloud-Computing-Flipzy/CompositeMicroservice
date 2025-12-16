@@ -4,7 +4,6 @@ import requests
 from uuid import UUID
 from typing import Optional, List, Dict
 from decimal import Decimal
-from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 from pydantic import BaseModel
@@ -107,18 +106,28 @@ def create_transaction(data: dict):
 
 def ensure_wallet_exists(user_id: UUID):
     """
-    Check if a wallet exists for the user. If not, create it.
-    This prevents transactions from failing if the seller hasn't logged in.
+    Smart Helper: 
+    1. Checks if wallet exists (GET).
+    2. If missing, Creates it (POST).
+    3. Handles cases where it might exist but we missed it.
     """
     try:
+        # 1. Check if wallet exists
         res = requests.get(f"{TRANSACTION_SERVICE_URL}/wallets", params={"user_id": str(user_id)})
         wallets = res.json()
         
         if wallets:
-            return wallets[0]
+            return wallets[0] # Found it!
             
+        # 2. If not found, Create it
         print(f"Creating missing wallet for user {user_id}")
         create_res = requests.post(f"{TRANSACTION_SERVICE_URL}/wallets", json={"user_id": str(user_id)})
+        
+        # If it fails with 400, it means "User already has a wallet" (Race condition fix)
+        if create_res.status_code == 400:
+             res = requests.get(f"{TRANSACTION_SERVICE_URL}/wallets", params={"user_id": str(user_id)})
+             return res.json()[0]
+
         create_res.raise_for_status()
         return create_res.json()
     except Exception as e:
@@ -179,6 +188,7 @@ def get_my_wallet_balance(claims=Depends(verify_jwt)):
     """
     user_id = claims.get("sub")
     
+    # Uses the smart helper to Get OR Create
     wallet = ensure_wallet_exists(user_id)
     if not wallet:
         raise HTTPException(500, "Could not load wallet")
@@ -197,7 +207,6 @@ def get_my_transactions(claims=Depends(verify_jwt)):
         return res.json()
     except Exception as e:
         print(f"History Error: {e}")
-        # Return empty list if no transactions found or service error
         return []
 
 
@@ -301,6 +310,7 @@ def create_composite_transaction(payload: CompositeTransactionCreate, claims=Dep
     seller = get_user(payload.seller_id)
     item = get_item(payload.item_id, payload.seller_id)
 
+    # Ensure both buyer and seller have wallets before starting!
     ensure_wallet_exists(payload.buyer_id)
     ensure_wallet_exists(payload.seller_id)
 
