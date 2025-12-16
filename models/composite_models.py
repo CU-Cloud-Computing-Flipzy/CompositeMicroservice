@@ -55,7 +55,7 @@ class CompositeMedia(BaseModel):
 
 class CompositeItem(BaseModel):
     id: UUID
-    seller_id: UUID
+    owner_user_id: UUID
     name: str
     description: str
     price: Decimal
