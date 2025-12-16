@@ -9,10 +9,12 @@ from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 from pydantic import BaseModel
 
+# --- GCS IMPORT ---
 try:
     from google.cloud import storage
 except ImportError:
     storage = None
+# ------------------
 
 from fastapi import FastAPI, HTTPException, Form, File, UploadFile, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,16 +29,14 @@ from models.composite_models import (
     CompositeTransactionCreate,
 )
 
-# ============================================================
-# Service Configuration
-# ============================================================
+# Configuration
 USER_SERVICE_URL = os.getenv("USER_SERVICE_URL", "http://localhost:8001").rstrip("/")
 LISTING_SERVICE_URL = os.getenv("LISTING_SERVICE_URL", "http://localhost:8002").rstrip("/")
 TRANSACTION_SERVICE_URL = os.getenv("TRANSACTION_SERVICE_URL", "http://localhost:8003").rstrip("/")
 
-# --- CONFIGURE YOUR BUCKET NAME HERE ---
+# --- UPDATED BUCKET NAME ---
 BUCKET_NAME = os.getenv("BUCKET_NAME", "flipzy-frontend") 
-# ---------------------------------------
+# ---------------------------
 
 SECRET_KEY = "YOUR_SECRET_KEY"
 ALGORITHM = "HS256"
@@ -46,20 +46,24 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 app = FastAPI(title="Composite Service")
 
+# --- UPDATED CORS SETTINGS ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "*", 
+        "https://storage.googleapis.com",  # Allow your frontend bucket
+        "https://storage.googleapis.com/flipzy-frontend"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# -----------------------------
 
 ITEM_SELLER_MAP: Dict[UUID, UUID] = {}
-executor = ThreadPoolExecutor(max_workers=5)
 
-# ============================================================
-# JWT Utility
-# ============================================================
+# ... (Keep JWT Utility & Helper Functions exactly as before) ...
+# (Copy-paste create_jwt, verify_jwt, require_admin, get_user, get_item, create_transaction, ensure_wallet_exists from previous version)
 
 def create_jwt(user_id: str, role: str):
     expire = datetime.utcnow() + timedelta(minutes=TOKEN_EXPIRE_MINUTES)
@@ -75,10 +79,6 @@ def verify_jwt(token: str = Depends(oauth2_scheme)):
 def require_admin(claims: dict):
     if claims.get("role") != "admin":
         raise HTTPException(403, "Admin role required")
-
-# ============================================================
-# Helper Functions
-# ============================================================
 
 def get_user(user_id: UUID) -> CompositeUser:
     try:
@@ -117,39 +117,32 @@ def ensure_wallet_exists(user_id: UUID):
         print(f"Error ensuring wallet for {user_id}: {e}")
         return None
 
-# --- NEW: GOOGLE CLOUD STORAGE UPLOAD FUNCTION ---
+# ============================================================
+# NEW: GCS UPLOAD FUNCTION
+# ============================================================
 def upload_file_to_bucket(file: UploadFile) -> str:
-    """Uploads a file to Google Cloud Storage and returns the public URL."""
+    """Uploads file to GCS bucket and returns public URL."""
     if not storage:
-        print("Google Cloud Storage not installed. Using fake URL.")
+        print("GCS library not found. Returning fake URL.")
         return f"https://fake-storage.com/{file.filename}"
 
     try:
         client = storage.Client()
         bucket = client.bucket(BUCKET_NAME)
         
-        # Create a unique filename to prevent overwrites
+        # Save to 'uploads/' folder
         blob_name = f"uploads/{uuid4()}-{file.filename}"
         blob = bucket.blob(blob_name)
         
-        # Upload the file
         blob.upload_from_file(file.file, content_type=file.content_type)
         
-        # Make it public (if your bucket allows it)
-        # Note: If Uniform Bucket Level Access is enabled, you just use the public link
-        # blob.make_public() 
-        
-        return blob.public_url
+        # Return the public link
+        return f"https://storage.googleapis.com/{BUCKET_NAME}/{blob_name}"
     except Exception as e:
-        print(f"Failed to upload to GCS: {e}")
-        # Fallback to prevent crash
+        print(f"GCS Upload Error: {e}")
         return f"https://upload-failed.com/{file.filename}"
-# -------------------------------------------------
 
-# ============================================================
-# Endpoints
-# ============================================================
-
+# ... (Keep standard endpoints: root, me, list_items, wallet, transactions, login) ...
 @app.get("/")
 def root():
     return {"message": "Composite Service Running"}
@@ -243,11 +236,9 @@ def admin_area(claims=Depends(verify_jwt)):
     require_admin(claims)
     return {"message": "Admin access granted"}
 
-
 # ============================================================
-# Create Item (With Real File Upload)
+# CREATE ITEM (The 1-2-3 Logic)
 # ============================================================
-
 @app.post("/composite/items/create", response_model=CompositeItem)
 def create_item_from_frontend(
     seller_id: str = Form(...),
@@ -258,30 +249,32 @@ def create_item_from_frontend(
     condition: str = Form(...),
     category_id: str = Form(...),
     file: Optional[UploadFile] = File(None),
-    claims=Depends(verify_jwt)
+    claims=Depends(verify_jwt) 
 ):
     media_list = []
 
-    # 1. UPLOAD FILE TO GCS AND GET REAL URL
+    # --- STEP 1: UPLOAD TO GCS & CREATE MEDIA RECORD ---
     if file:
-        real_url = upload_file_to_bucket(file) # <--- Calls the new helper function
+        real_url = upload_file_to_bucket(file)
         
         media_payload = {
-            "url": real_url, # <--- Sends the real URL to the database
+            "url": real_url,
             "type": "image",
             "alt_text": name,
             "is_primary": True
         }
         
-        media_res = httpx.post(f"{LISTING_SERVICE_URL}/media", json=media_payload)
-        
-        if media_res.status_code == 201:
-            media_data = media_res.json()
-            media_list.append({"id": media_data['id']})
-        else:
-            print(f"Media creation failed: {media_res.text}")
+        try:
+            media_res = httpx.post(f"{LISTING_SERVICE_URL}/media", json=media_payload)
+            if media_res.status_code == 201:
+                media_data = media_res.json()
+                media_list.append({"id": media_data['id']})
+            else:
+                print(f"Media DB creation failed: {media_res.text}")
+        except Exception as e:
+            print(f"Media Service Connection Error: {e}")
 
-    # 2. CREATE ITEM
+    # --- STEP 2 & 3: CREATE ITEM & LINK MEDIA ---
     listing_payload = {
         "name": name,
         "description": description,
@@ -289,21 +282,26 @@ def create_item_from_frontend(
         "status": status,
         "condition": condition,
         "category": {"id": category_id},
-        "owner_user_id": seller_id,
-        "media": media_list,
+        "owner_user_id": seller_id, 
+        "media": media_list,        
     }
 
+    print(f"Sending to Listing Service: {listing_payload}") 
+
     res = httpx.post(f"{LISTING_SERVICE_URL}/items", json=listing_payload)
+    
     if res.status_code not in (200, 201):
+        print(f"Listing Service Error: {res.text}")
+        # IMPORTANT: Return the actual error so you see 500 instead of just CORS failure
         raise HTTPException(res.status_code, res.text)
 
     created = res.json()
     item_id = UUID(created["id"])
     ITEM_SELLER_MAP[item_id] = UUID(seller_id)
+    
     return CompositeItem(**created)
 
-
-# ... (Transaction logic remains the same) ...
+# ... (Keep Transaction endpoints) ...
 @app.post("/composite/transactions", response_model=CompositeTransaction)
 def create_composite_transaction(payload: CompositeTransactionCreate, claims=Depends(verify_jwt)):
     buyer = get_user(payload.buyer_id)
