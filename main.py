@@ -74,37 +74,6 @@ def require_admin(claims: dict):
     if claims.get("role") != "admin":
         raise HTTPException(403, "Admin role required")
 
-
-@app.get("/composite/me", response_model=CompositeUser)
-def get_current_user_profile(claims=Depends(verify_jwt)):
-    """
-    Uses the JWT token to fetch the full user profile.
-    1. verify_jwt checks if the token is real.
-    2. We grab the 'sub' (user_id) from the token.
-    3. We fetch the full data from the User Service.
-    """
-    user_id = claims.get("sub")
-    if not user_id:
-        raise HTTPException(400, "Invalid token claims")
-    
-    return get_user(UUID(user_id))
-
-@app.get("/composite/items", response_model=List[CompositeItem])
-def list_composite_items():
-    """Fetch all items from the listing service."""
-    try:
-        # Fetch raw items from Listing Service
-        res = requests.get(f"{LISTING_SERVICE_URL}/items", timeout=5)
-        res.raise_for_status()
-        items_data = res.json()
-        
-        # Convert to CompositeItem list
-        return [CompositeItem(**item) for item in items_data]
-    except Exception as e:
-        print(f"Error fetching items: {e}")
-        # Return empty list so frontend doesn't crash
-        return []
-
 # ============================================================
 # Helper Functions
 # ============================================================
@@ -146,7 +115,86 @@ def root():
 
 
 # ============================================================
-# Google OAuth Login → Create User → Return JWT
+# User Profile & Items
+# ============================================================
+
+@app.get("/composite/me", response_model=CompositeUser)
+def get_current_user_profile(claims=Depends(verify_jwt)):
+    """
+    Uses the JWT token to fetch the full user profile.
+    """
+    user_id = claims.get("sub")
+    if not user_id:
+        raise HTTPException(400, "Invalid token claims")
+    
+    return get_user(UUID(user_id))
+
+
+@app.get("/composite/items", response_model=List[CompositeItem])
+def list_composite_items():
+    """Fetch all items from the listing service."""
+    try:
+        # Fetch raw items from Listing Service
+        res = requests.get(f"{LISTING_SERVICE_URL}/items", timeout=5)
+        res.raise_for_status()
+        items_data = res.json()
+        
+        # Convert to CompositeItem list
+        return [CompositeItem(**item) for item in items_data]
+    except Exception as e:
+        print(f"Error fetching items: {e}")
+        return []
+
+
+# ============================================================
+# NEW: Wallet & History Endpoints (Connects to Transaction Svc)
+# ============================================================
+
+@app.get("/composite/wallet")
+def get_my_wallet_balance(claims=Depends(verify_jwt)):
+    """
+    Get current user's wallet. 
+    If they don't have one, create it automatically.
+    """
+    user_id = claims.get("sub")
+    
+    # 1. Try to find existing wallet
+    try:
+        res = requests.get(f"{TRANSACTION_SERVICE_URL}/wallets", params={"user_id": user_id})
+        wallets = res.json()
+        
+        if wallets:
+            # Return the first wallet found
+            return wallets[0]
+            
+        # 2. If no wallet exists, create one
+        create_payload = {"user_id": user_id}
+        create_res = requests.post(f"{TRANSACTION_SERVICE_URL}/wallets", json=create_payload)
+        create_res.raise_for_status()
+        return create_res.json()
+        
+    except Exception as e:
+        print(f"Wallet Error: {e}")
+        raise HTTPException(500, "Failed to retrieve or create wallet")
+
+
+@app.get("/composite/my-transactions")
+def get_my_transactions(claims=Depends(verify_jwt)):
+    """Fetch transaction history where the user is the BUYER."""
+    user_id = claims.get("sub")
+    try:
+        # Fetch transactions where I am the buyer
+        res = requests.get(f"{TRANSACTION_SERVICE_URL}/transactions", params={"buyer_id": user_id})
+        res.raise_for_status()
+        return res.json()
+    except Exception as e:
+        print(f"History Error: {e}")
+        # Return empty list if no transactions found or service error
+        return []
+
+
+# ============================================================
+# Google OAuth Login
 # ============================================================
 
 class GoogleLoginRequest(BaseModel):
@@ -184,17 +232,7 @@ def login_with_google(login: GoogleLoginRequest):
 
 
 # ============================================================
-# Protected Endpoint Example
-# ============================================================
-
-@app.get("/secure/me")
-def secure_me(claims=Depends(verify_jwt)):
-    """Endpoint requiring valid JWT."""
-    return {"message": "Token valid", "claims": claims}
-
-
-# ============================================================
-# Admin-only Endpoint Example
+# Admin Endpoint
 # ============================================================
 
 @app.get("/admin/area")
