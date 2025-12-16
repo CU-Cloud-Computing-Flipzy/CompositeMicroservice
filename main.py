@@ -4,6 +4,7 @@ import requests
 from uuid import UUID
 from typing import Optional, List, Dict
 from decimal import Decimal
+from datetime import datetime, timedelta 
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 from pydantic import BaseModel
@@ -55,6 +56,7 @@ executor = ThreadPoolExecutor(max_workers=5)
 
 def create_jwt(user_id: str, role: str):
     """Generate a signed JWT token containing user id and role."""
+    # This line was crashing because datetime wasn't imported!
     expire = datetime.utcnow() + timedelta(minutes=TOKEN_EXPIRE_MINUTES)
     payload = {"sub": user_id, "role": role, "exp": expire}
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
@@ -206,6 +208,7 @@ def get_my_transactions(claims=Depends(verify_jwt)):
         print(f"History Error: {e}")
         return []
 
+# --- NEW DEPOSIT ENDPOINT ---
 class CompositeDeposit(BaseModel):
     amount: Decimal
 
