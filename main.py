@@ -105,6 +105,27 @@ def create_transaction(data: dict):
     return res.json()
 
 
+def ensure_wallet_exists(user_id: UUID):
+    """
+    Check if a wallet exists for the user. If not, create it.
+    This prevents transactions from failing if the seller hasn't logged in.
+    """
+    try:
+        res = requests.get(f"{TRANSACTION_SERVICE_URL}/wallets", params={"user_id": str(user_id)})
+        wallets = res.json()
+        
+        if wallets:
+            return wallets[0]
+            
+        print(f"Creating missing wallet for user {user_id}")
+        create_res = requests.post(f"{TRANSACTION_SERVICE_URL}/wallets", json={"user_id": str(user_id)})
+        create_res.raise_for_status()
+        return create_res.json()
+    except Exception as e:
+        print(f"Error ensuring wallet for {user_id}: {e}")
+        return None
+
+
 # ============================================================
 # Public Endpoint
 # ============================================================
@@ -147,7 +168,7 @@ def list_composite_items():
 
 
 # ============================================================
-# NEW: Wallet & History Endpoints (Connects to Transaction Svc)
+# Wallet & History Endpoints (Connects to Transaction Svc)
 # ============================================================
 
 @app.get("/composite/wallet")
@@ -158,24 +179,11 @@ def get_my_wallet_balance(claims=Depends(verify_jwt)):
     """
     user_id = claims.get("sub")
     
-    # 1. Try to find existing wallet
-    try:
-        res = requests.get(f"{TRANSACTION_SERVICE_URL}/wallets", params={"user_id": user_id})
-        wallets = res.json()
+    wallet = ensure_wallet_exists(user_id)
+    if not wallet:
+        raise HTTPException(500, "Could not load wallet")
         
-        if wallets:
-            # Return the first wallet found
-            return wallets[0]
-            
-        # 2. If no wallet exists, create one
-        create_payload = {"user_id": user_id}
-        create_res = requests.post(f"{TRANSACTION_SERVICE_URL}/wallets", json=create_payload)
-        create_res.raise_for_status()
-        return create_res.json()
-        
-    except Exception as e:
-        print(f"Wallet Error: {e}")
-        raise HTTPException(500, "Failed to retrieve or create wallet")
+    return wallet
 
 
 @app.get("/composite/my-transactions")
@@ -292,6 +300,9 @@ def create_composite_transaction(payload: CompositeTransactionCreate, claims=Dep
     buyer = get_user(payload.buyer_id)
     seller = get_user(payload.seller_id)
     item = get_item(payload.item_id, payload.seller_id)
+
+    ensure_wallet_exists(payload.buyer_id)
+    ensure_wallet_exists(payload.seller_id)
 
     tx_payload = payload.dict()
     tx_payload["title_snapshot"] = item.name
