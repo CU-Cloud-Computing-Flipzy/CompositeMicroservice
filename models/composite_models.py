@@ -40,7 +40,6 @@ class CompositeCategory(BaseModel):
 
 class CompositeMedia(BaseModel):
     id: UUID
-    item_id: UUID
     url: str
     type: str
     alt_text: Optional[str] = None
