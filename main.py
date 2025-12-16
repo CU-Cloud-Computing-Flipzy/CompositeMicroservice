@@ -34,9 +34,7 @@ USER_SERVICE_URL = os.getenv("USER_SERVICE_URL", "http://localhost:8001").rstrip
 LISTING_SERVICE_URL = os.getenv("LISTING_SERVICE_URL", "http://localhost:8002").rstrip("/")
 TRANSACTION_SERVICE_URL = os.getenv("TRANSACTION_SERVICE_URL", "http://localhost:8003").rstrip("/")
 
-# --- UPDATED BUCKET NAME ---
 BUCKET_NAME = os.getenv("BUCKET_NAME", "flipzy-frontend") 
-# ---------------------------
 
 SECRET_KEY = "YOUR_SECRET_KEY"
 ALGORITHM = "HS256"
@@ -46,24 +44,20 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 app = FastAPI(title="Composite Service")
 
-# --- UPDATED CORS SETTINGS ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "*", 
-        "https://storage.googleapis.com",  # Allow your frontend bucket
+        "https://storage.googleapis.com",  
         "https://storage.googleapis.com/flipzy-frontend"
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# -----------------------------
 
 ITEM_SELLER_MAP: Dict[UUID, UUID] = {}
 
-# ... (Keep JWT Utility & Helper Functions exactly as before) ...
-# (Copy-paste create_jwt, verify_jwt, require_admin, get_user, get_item, create_transaction, ensure_wallet_exists from previous version)
 
 def create_jwt(user_id: str, role: str):
     expire = datetime.utcnow() + timedelta(minutes=TOKEN_EXPIRE_MINUTES)
@@ -130,19 +124,16 @@ def upload_file_to_bucket(file: UploadFile) -> str:
         client = storage.Client()
         bucket = client.bucket(BUCKET_NAME)
         
-        # Save to 'uploads/' folder
         blob_name = f"uploads/{uuid4()}-{file.filename}"
         blob = bucket.blob(blob_name)
         
         blob.upload_from_file(file.file, content_type=file.content_type)
         
-        # Return the public link
         return f"https://storage.googleapis.com/{BUCKET_NAME}/{blob_name}"
     except Exception as e:
         print(f"GCS Upload Error: {e}")
         return f"https://upload-failed.com/{file.filename}"
 
-# ... (Keep standard endpoints: root, me, list_items, wallet, transactions, login) ...
 @app.get("/")
 def root():
     return {"message": "Composite Service Running"}
@@ -236,9 +227,7 @@ def admin_area(claims=Depends(verify_jwt)):
     require_admin(claims)
     return {"message": "Admin access granted"}
 
-# ============================================================
-# CREATE ITEM (The 1-2-3 Logic)
-# ============================================================
+
 @app.post("/composite/items/create", response_model=CompositeItem)
 def create_item_from_frontend(
     seller_id: str = Form(...),
@@ -253,7 +242,6 @@ def create_item_from_frontend(
 ):
     media_list = []
 
-    # --- STEP 1: UPLOAD TO GCS & CREATE MEDIA RECORD ---
     if file:
         real_url = upload_file_to_bucket(file)
         
@@ -274,7 +262,6 @@ def create_item_from_frontend(
         except Exception as e:
             print(f"Media Service Connection Error: {e}")
 
-    # --- STEP 2 & 3: CREATE ITEM & LINK MEDIA ---
     listing_payload = {
         "name": name,
         "description": description,
@@ -292,7 +279,6 @@ def create_item_from_frontend(
     
     if res.status_code not in (200, 201):
         print(f"Listing Service Error: {res.text}")
-        # IMPORTANT: Return the actual error so you see 500 instead of just CORS failure
         raise HTTPException(res.status_code, res.text)
 
     created = res.json()
@@ -301,7 +287,6 @@ def create_item_from_frontend(
     
     return CompositeItem(**created)
 
-# ... (Keep Transaction endpoints) ...
 @app.post("/composite/transactions", response_model=CompositeTransaction)
 def create_composite_transaction(payload: CompositeTransactionCreate, claims=Depends(verify_jwt)):
     buyer = get_user(payload.buyer_id)
