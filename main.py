@@ -327,6 +327,64 @@ def create_composite_transaction(payload: CompositeTransactionCreate, claims=Dep
         created_at=tx_raw["created_at"],
     )
 
+@app.post("/composite/items/create", response_model=CompositeItem)
+def create_item_from_frontend(
+    seller_id: str = Form(...),
+    name: str = Form(...),
+    price: Decimal = Form(...),
+    description: str = Form(...),
+    status: str = Form(...),
+    condition: str = Form(...),
+    category_id: str = Form(...),
+    file: Optional[UploadFile] = File(None),
+    claims=Depends(verify_jwt)
+):
+    media_list = []
+
+    if file:
+        fake_url = f"https://storage.googleapis.com/flipzy-content/{file.filename}"
+        
+        media_payload = {
+            "url": fake_url,
+            "type": "image",
+            "alt_text": name,
+            "is_primary": True
+        }
+        
+        print(f"Creating Media: {media_payload}")
+        media_res = httpx.post(f"{LISTING_SERVICE_URL}/media", json=media_payload)
+        
+        if media_res.status_code == 201:
+            media_data = media_res.json()
+            media_list.append({"id": media_data['id']}) 
+        else:
+            print(f"Media creation failed: {media_res.text}")
+
+    
+    listing_payload = {
+        "name": name,
+        "description": description,
+        "price": str(price),
+        "status": status,
+        "condition": condition,
+        "category": {"id": category_id},
+        "owner_user_id": seller_id, 
+        "media": media_list,        
+    }
+
+    print(f"Creating Item with Payload: {listing_payload}")
+    res = httpx.post(f"{LISTING_SERVICE_URL}/items", json=listing_payload)
+    
+    if res.status_code not in (200, 201):
+        print(f"Listing Service Error: {res.text}")
+        raise HTTPException(res.status_code, res.text)
+
+    created = res.json()
+    item_id = UUID(created["id"])
+
+    ITEM_SELLER_MAP[item_id] = UUID(seller_id)
+    
+    return CompositeItem(**created)
 
 # ============================================================
 # Run App
