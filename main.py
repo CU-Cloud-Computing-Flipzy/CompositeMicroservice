@@ -74,9 +74,6 @@ def require_admin(claims: dict):
     if claims.get("role") != "admin":
         raise HTTPException(403, "Admin role required")
 
-# ============================================================
-# Add this to main.py (e.g., after the Login endpoint)
-# ============================================================
 
 @app.get("/composite/me", response_model=CompositeUser)
 def get_current_user_profile(claims=Depends(verify_jwt)):
@@ -91,6 +88,22 @@ def get_current_user_profile(claims=Depends(verify_jwt)):
         raise HTTPException(400, "Invalid token claims")
     
     return get_user(UUID(user_id))
+
+@app.get("/composite/items", response_model=List[CompositeItem])
+def list_composite_items():
+    """Fetch all items from the listing service."""
+    try:
+        # Fetch raw items from Listing Service
+        res = requests.get(f"{LISTING_SERVICE_URL}/items", timeout=5)
+        res.raise_for_status()
+        items_data = res.json()
+        
+        # Convert to CompositeItem list
+        return [CompositeItem(**item) for item in items_data]
+    except Exception as e:
+        print(f"Error fetching items: {e}")
+        # Return empty list so frontend doesn't crash
+        return []
 
 # ============================================================
 # Helper Functions
