@@ -56,7 +56,6 @@ executor = ThreadPoolExecutor(max_workers=5)
 
 def create_jwt(user_id: str, role: str):
     """Generate a signed JWT token containing user id and role."""
-    # This line was crashing because datetime wasn't imported!
     expire = datetime.utcnow() + timedelta(minutes=TOKEN_EXPIRE_MINUTES)
     payload = {"sub": user_id, "role": role, "exp": expire}
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
@@ -107,25 +106,17 @@ def create_transaction(data: dict):
 
 
 def ensure_wallet_exists(user_id: UUID):
-    """
-    Smart Helper: 
-    1. Checks if wallet exists (GET).
-    2. If missing, Creates it (POST).
-    """
     try:
-        # 1. Check if wallet exists
         res = requests.get(f"{TRANSACTION_SERVICE_URL}/wallets", params={"user_id": str(user_id)})
         wallets = res.json()
         
         if wallets:
-            return wallets[0] # Found it!
+            return wallets[0]
             
-        # 2. If not found, Create it
         print(f"Creating missing wallet for user {user_id}")
         create_res = requests.post(f"{TRANSACTION_SERVICE_URL}/wallets", json={"user_id": str(user_id)})
         
         if create_res.status_code == 400:
-             # Race condition fallback
              res = requests.get(f"{TRANSACTION_SERVICE_URL}/wallets", params={"user_id": str(user_id)})
              return res.json()[0]
 
@@ -151,13 +142,9 @@ def root():
 
 @app.get("/composite/me", response_model=CompositeUser)
 def get_current_user_profile(claims=Depends(verify_jwt)):
-    """
-    Uses the JWT token to fetch the full user profile.
-    """
     user_id = claims.get("sub")
     if not user_id:
         raise HTTPException(400, "Invalid token claims")
-    
     return get_user(UUID(user_id))
 
 
@@ -165,12 +152,9 @@ def get_current_user_profile(claims=Depends(verify_jwt)):
 def list_composite_items():
     """Fetch all items from the listing service."""
     try:
-        # Fetch raw items from Listing Service
         res = requests.get(f"{LISTING_SERVICE_URL}/items", timeout=5)
         res.raise_for_status()
         items_data = res.json()
-        
-        # Convert to CompositeItem list
         return [CompositeItem(**item) for item in items_data]
     except Exception as e:
         print(f"Error fetching items: {e}")
@@ -183,22 +167,15 @@ def list_composite_items():
 
 @app.get("/composite/wallet")
 def get_my_wallet_balance(claims=Depends(verify_jwt)):
-    """
-    Get current user's wallet. 
-    If they don't have one, create it automatically.
-    """
     user_id = claims.get("sub")
-    
     wallet = ensure_wallet_exists(user_id)
     if not wallet:
         raise HTTPException(500, "Could not load wallet")
-        
     return wallet
 
 
 @app.get("/composite/my-transactions")
 def get_my_transactions(claims=Depends(verify_jwt)):
-    """Fetch transaction history where the user is the BUYER."""
     user_id = claims.get("sub")
     try:
         res = requests.get(f"{TRANSACTION_SERVICE_URL}/transactions", params={"buyer_id": user_id})
@@ -208,15 +185,12 @@ def get_my_transactions(claims=Depends(verify_jwt)):
         print(f"History Error: {e}")
         return []
 
-# --- NEW DEPOSIT ENDPOINT ---
 class CompositeDeposit(BaseModel):
     amount: Decimal
 
 @app.post("/composite/wallet/deposit")
 def deposit_money(payload: CompositeDeposit, claims=Depends(verify_jwt)):
-    """Add money to the logged-in user's wallet."""
     user_id = claims.get("sub")
-    
     wallet = ensure_wallet_exists(user_id)
     if not wallet:
         raise HTTPException(500, "Wallet not found")
@@ -247,8 +221,6 @@ class GoogleLoginRequest(BaseModel):
 
 @app.post("/login/google")
 def login_with_google(login: GoogleLoginRequest):
-    """Simulated Google OAuth login. Creates account if missing and returns JWT."""
-
     email_q = quote(login.email)
     res = httpx.get(f"{USER_SERVICE_URL}/users/by_email/{email_q}")
 
@@ -277,13 +249,12 @@ def login_with_google(login: GoogleLoginRequest):
 
 @app.get("/admin/area")
 def admin_area(claims=Depends(verify_jwt)):
-    """Endpoint only accessible by admin users."""
     require_admin(claims)
     return {"message": "Admin access granted"}
 
 
 # ============================================================
-# Create Item
+# Create Item (UPDATED: SENDS OWNER ID)
 # ============================================================
 
 @app.post("/composite/items/create", response_model=CompositeItem)
@@ -307,11 +278,13 @@ def create_item_from_frontend(
         "status": status,
         "condition": condition,
         "category": {"id": category_id},
+        "owner_user_id": seller_id, # <--- THIS LINE WAS MISSING
         "media": [],
     }
 
     res = httpx.post(f"{LISTING_SERVICE_URL}/items", json=listing_payload)
     if res.status_code not in (200, 201):
+        print(f"Listing Service Error: {res.text}")
         raise HTTPException(res.status_code, res.text)
 
     created = res.json()
