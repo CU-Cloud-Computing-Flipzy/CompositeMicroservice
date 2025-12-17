@@ -6,12 +6,13 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 class CompositeAddress(BaseModel):
-    id: Optional[UUID] = None
-    user_id: Optional[UUID] = None
-    country: str
-    city: str
-    street: str
-    postal_code: Optional[str] = None
+    id: Optional[UUID] = Field(None, description="Address ID(UUID)")
+    user_id: Optional[UUID] = Field(None, description="User ID(UUID)")
+    
+    country: str = Field(..., min_length=1, max_length=60, description="country")
+    city: str = Field(..., min_length=1, max_length=60, description="city")
+    street: str = Field(..., min_length=1, max_length=120, description="street")
+    postal_code: Optional[str] = Field(None, min_length=3, max_length=20, description="postal code")
 
 # ======================================================
 # Composite User (from User Microservice)
