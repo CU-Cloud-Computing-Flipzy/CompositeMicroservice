@@ -21,7 +21,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 import jwt
 
-# Import models but use them carefully
 from models.composite_models import (
     CompositeUser,
     CompositeItem,
@@ -112,9 +111,6 @@ def ensure_wallet_exists(user_id: UUID):
         print(f"Error ensuring wallet for {user_id}: {e}")
         return None
 
-# ============================================================
-# NEW: GCS UPLOAD FUNCTION
-# ============================================================
 def upload_file_to_bucket(file: UploadFile) -> str:
     """Uploads file to GCS bucket and returns public URL."""
     if not storage:
@@ -128,7 +124,6 @@ def upload_file_to_bucket(file: UploadFile) -> str:
         blob_name = f"uploads/{uuid4()}-{file.filename}"
         blob = bucket.blob(blob_name)
         
-        # Disable caching for new uploads so users see changes instantly
         blob.cache_control = "no-cache, max-age=0"
         
         blob.upload_from_file(file.file, content_type=file.content_type)
@@ -148,7 +143,6 @@ def get_current_user_profile(claims=Depends(verify_jwt)):
     if not user_id:
         raise HTTPException(400, "Invalid token claims")
     return get_user(UUID(user_id))
-
 @app.post("/composite/profile")
 def update_my_profile(
     payload: dict = Body(...),
@@ -205,23 +199,19 @@ def update_my_profile(
         "address": created_address
     }
 
-# --- CORRECTED LIST ITEMS ENDPOINT ---
-# Removed response_model to prevent crash on data mismatch
 @app.get("/composite/items")
 def list_composite_items():
     try:
         res = requests.get(f"{LISTING_SERVICE_URL}/items", timeout=5)
         res.raise_for_status()
         
-        # Return raw data so frontend receives it even if structure is imperfect
         items_data = res.json()
-        print("DEBUG RAW ITEM DATA:", items_data) # Check logs if frontend fails
+        print("DEBUG RAW ITEM DATA:", items_data) 
         return items_data
 
     except Exception as e:
         print(f"Error fetching items: {e}")
-        # Return empty list on failure so frontend doesn't crash completely
-        # OR raise exception if you want to debug: raise HTTPException(500, str(e))
+
         return []
 
 @app.get("/composite/wallet")
@@ -401,6 +391,7 @@ def update_my_item(
     if not user_id:
         raise HTTPException(401, "Invalid token")
 
+    # 1. Check if item exists
     try:
         res = requests.get(
             f"{LISTING_SERVICE_URL}/items/{item_id}",
@@ -411,12 +402,14 @@ def update_my_item(
     except Exception:
         raise HTTPException(404, "Item not found")
 
+    # 2. Verify Ownership
     if item.get("owner_user_id") != user_id:
         raise HTTPException(
             status_code=403,
             detail="You can only update your own items"
         )
 
+    # 3. Perform Update
     try:
         update_res = requests.patch(
             f"{LISTING_SERVICE_URL}/items/{item_id}",
