@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 import jwt
 
+# Import models but use them carefully
 from models.composite_models import (
     CompositeUser,
     CompositeItem,
@@ -127,6 +128,9 @@ def upload_file_to_bucket(file: UploadFile) -> str:
         blob_name = f"uploads/{uuid4()}-{file.filename}"
         blob = bucket.blob(blob_name)
         
+        # Disable caching for new uploads so users see changes instantly
+        blob.cache_control = "no-cache, max-age=0"
+        
         blob.upload_from_file(file.file, content_type=file.content_type)
         
         return f"https://storage.googleapis.com/{BUCKET_NAME}/{blob_name}"
@@ -201,19 +205,24 @@ def update_my_profile(
         "address": created_address
     }
 
-@app.get("/composite/items") 
+# --- CORRECTED LIST ITEMS ENDPOINT ---
+# Removed response_model to prevent crash on data mismatch
+@app.get("/composite/items")
 def list_composite_items():
     try:
         res = requests.get(f"{LISTING_SERVICE_URL}/items", timeout=5)
         res.raise_for_status()
+        
+        # Return raw data so frontend receives it even if structure is imperfect
         items_data = res.json()
-        
-        print("DEBUG RAW DATA:", items_data) 
-        
-        return items_data 
+        print("DEBUG RAW ITEM DATA:", items_data) # Check logs if frontend fails
+        return items_data
+
     except Exception as e:
         print(f"Error fetching items: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Return empty list on failure so frontend doesn't crash completely
+        # OR raise exception if you want to debug: raise HTTPException(500, str(e))
+        return []
 
 @app.get("/composite/wallet")
 def get_my_wallet_balance(claims=Depends(verify_jwt)):
