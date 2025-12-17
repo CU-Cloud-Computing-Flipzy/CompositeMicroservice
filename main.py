@@ -536,7 +536,10 @@ def create_composite_transaction(
         "price_snapshot": str(final_price),
     }
 
+    # 1. CREATE transaction (this was missing)
     tx_raw = create_transaction_helper(tx_payload)
+
+    # 2. If virtual → checkout immediately
     if payload.order_type == "VIRTUAL":
         try:
             checkout_res = requests.post(
@@ -545,8 +548,13 @@ def create_composite_transaction(
             )
             checkout_res.raise_for_status()
 
-            tx_raw = checkout_res.json()
+            # 3. Re-fetch transaction to get full, consistent data
+            tx_raw = requests.get(
+                f"{TRANSACTION_SERVICE_URL}/transactions/{tx_raw['id']}",
+                timeout=5
+            ).json()
 
+            # 4. Delete item
             try:
                 requests.delete(
                     f"{LISTING_SERVICE_URL}/items/{payload.item_id}",
