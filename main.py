@@ -537,6 +537,27 @@ def create_composite_transaction(
     }
 
     tx_raw = create_transaction_helper(tx_payload)
+    if payload.order_type == "VIRTUAL":
+        try:
+            checkout_res = requests.post(
+                f"{TRANSACTION_SERVICE_URL}/transactions/{tx_raw['id']}/checkout",
+                timeout=5
+            )
+            checkout_res.raise_for_status()
+
+            tx_raw = checkout_res.json()
+
+            try:
+                requests.delete(
+                    f"{LISTING_SERVICE_URL}/items/{payload.item_id}",
+                    timeout=5
+                )
+                print(f"[VIRTUAL] Auto-deleted item {payload.item_id}")
+            except Exception as e:
+                print(f"[VIRTUAL] Item delete warning: {e}")
+
+        except Exception as e:
+            raise HTTPException(502, f"Virtual checkout failed: {e}")
 
     item.price = float(final_price)
 
