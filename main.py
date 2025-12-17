@@ -465,6 +465,10 @@ def admin_delete_item(
 
     return None
 
+# ============================================================
+# UPDATED TRANSACTIONS LOGIC
+# ============================================================
+
 @app.post("/composite/transactions", response_model=CompositeTransaction)
 def create_composite_transaction(
     payload: CompositeTransactionCreate,
@@ -474,55 +478,43 @@ def create_composite_transaction(
     if not buyer_id:
         raise HTTPException(401, "Invalid token")
 
+    # Mapped 'get_user' -> 'get_user_with_address'
     buyer = get_user_with_address(UUID(buyer_id))
 
-    item_res = requests.get(f"{LISTING_SERVICE_URL}/items/{payload.item_id}", timeout=10)
+    item_res = requests.get(
+        f"{LISTING_SERVICE_URL}/items/{payload.item_id}",
+        timeout=5
+    )
     if item_res.status_code != 200:
         raise HTTPException(404, "Item not found")
 
-    item_data = item_res.json()
-    seller_id = item_data['owner_user_id']
-    seller = get_user_with_address(UUID(seller_id))
+    item = CompositeItem(**item_res.json())
+    seller_id = item.owner_user_id
+    
+    # Mapped 'get_user' -> 'get_user_with_address'
+    seller = get_user_with_address(seller_id)
 
     ensure_wallet_exists(UUID(buyer_id))
-    ensure_wallet_exists(UUID(seller_id))
+    ensure_wallet_exists(seller_id)
 
-    # FIX: Casting everything to string to prevent JSON serialization error
+    # Note: Cast IDs to str() to ensure JSON serialization works in create_transaction_helper
     tx_payload = {
         "buyer_id": str(buyer_id),
         "seller_id": str(seller_id),
         "item_id": str(payload.item_id),
         "order_type": payload.order_type,
-        "title_snapshot": item_data['name'],
-        "price_snapshot": str(item_data['price']),
+        "title_snapshot": item.name,
+        "price_snapshot": str(item.price),
     }
 
+    # Mapped 'create_transaction' -> 'create_transaction_helper'
     tx_raw = create_transaction_helper(tx_payload)
-
-    # Convert composite item
-    try:
-        comp_item = CompositeItem(**item_data)
-    except:
-        # Fallback if validation fails
-        comp_item = CompositeItem(
-            id=item_data['id'], 
-            owner_user_id=item_data['owner_user_id'],
-            name=item_data['name'], 
-            description=item_data.get('description', ''), 
-            price=item_data['price'], 
-            status=item_data.get('status','active'),
-            condition=item_data.get('condition','new'),
-            category={"id": uuid4(), "name": "Uncategorized", "description": "", "created_at": datetime.now(), "updated_at": datetime.now()},
-            media=[],
-            created_at=datetime.now(), 
-            updated_at=datetime.now()
-        )
 
     return CompositeTransaction(
         id=tx_raw["id"],
         buyer=buyer,
         seller=seller,
-        item=comp_item,
+        item=item,
         order_type=tx_raw["order_type"],
         title_snapshot=tx_raw["title_snapshot"],
         price_snapshot=Decimal(tx_raw["price_snapshot"]),
@@ -540,17 +532,26 @@ def checkout_real_transaction(
         raise HTTPException(401, "Invalid token")
 
     try:
-        res = requests.get(f"{TRANSACTION_SERVICE_URL}/transactions/{tx_id}", timeout=10)
+        res = requests.get(
+            f"{TRANSACTION_SERVICE_URL}/transactions/{tx_id}",
+            timeout=5
+        )
         res.raise_for_status()
         tx = res.json()
     except Exception:
         raise HTTPException(404, "Transaction not found")
 
     if tx.get("buyer_id") != user_id:
-        raise HTTPException(403, "Only buyer can checkout this transaction")
+        raise HTTPException(
+            status_code=403,
+            detail="Only buyer can checkout this transaction"
+        )
 
     try:
-        checkout_res = requests.post(f"{TRANSACTION_SERVICE_URL}/transactions/{tx_id}/checkout", timeout=10)
+        checkout_res = requests.post(
+            f"{TRANSACTION_SERVICE_URL}/transactions/{tx_id}/checkout",
+            timeout=5
+        )
         checkout_res.raise_for_status()
     except Exception as e:
         raise HTTPException(502, f"Checkout failed: {e}")
