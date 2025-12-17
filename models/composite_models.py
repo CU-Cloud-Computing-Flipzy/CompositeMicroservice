@@ -5,19 +5,20 @@ from decimal import Decimal
 from datetime import datetime
 from pydantic import BaseModel, Field
 
+# ======================================================
+# Address
+# ======================================================
 class CompositeAddress(BaseModel):
-    id: Optional[UUID] = Field(None, description="Address ID(UUID)")
-    user_id: Optional[UUID] = Field(None, description="User ID(UUID)")
-    
-    country: str = Field(..., min_length=1, max_length=60, description="country")
-    city: str = Field(..., min_length=1, max_length=60, description="city")
-    street: str = Field(..., min_length=1, max_length=120, description="street")
-    postal_code: Optional[str] = Field(None, min_length=3, max_length=20, description="postal code")
+    id: Optional[UUID] = Field(None, description="Address ID")
+    user_id: Optional[UUID] = Field(None, description="User ID")
+    country: str = Field(..., min_length=1, max_length=60)
+    city: str = Field(..., min_length=1, max_length=60)
+    street: str = Field(..., min_length=1, max_length=120)
+    postal_code: Optional[str] = Field(None, min_length=3, max_length=20)
 
 # ======================================================
-# Composite User (from User Microservice)
+# Composite User
 # ======================================================
-
 class CompositeUser(BaseModel):
     id: UUID
     username: str
@@ -29,94 +30,80 @@ class CompositeUser(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
+# ======================================================
+# Profile Response (User + Address)
+# ======================================================
+class CompositeProfileResponse(BaseModel):
+    user: CompositeUser
+    address: Optional[CompositeAddress] = None
 
 # ======================================================
-# Category (from Listing Service)
+# Category
 # ======================================================
-
 class CompositeCategory(BaseModel):
-    id: UUID
-    name: str
-    description: str
-    created_at: datetime
-    updated_at: datetime
-
+    id: Optional[UUID] = None
+    name: Optional[str] = "Uncategorized"
+    description: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 # ======================================================
-# Media (from Listing Service)
+# Media
 # ======================================================
-
 class CompositeMedia(BaseModel):
-    id: UUID
+    id: Optional[UUID] = None
     url: str
-    type: str
+    type: Optional[str] = "image"
     alt_text: Optional[str] = None
-    is_primary: bool
-    created_at: datetime
-    updated_at: datetime
-
+    is_primary: bool = False
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 # ======================================================
-# Item (from Listing Service)
+# Item
 # ======================================================
-
 class CompositeItem(BaseModel):
     id: UUID
     owner_user_id: UUID
     name: str
-    description: str
-    price: Decimal
-    status: str
-    condition: str
-    category: CompositeCategory
-    media: List[CompositeMedia]
-
-    created_at: datetime
-    updated_at: datetime
+    description: Optional[str] = ""
+    price: float
+    status: Optional[str] = "active"
+    condition: Optional[str] = "new"
+    category: Optional[CompositeCategory] = None
+    media: List[CompositeMedia] = []
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
     links: Optional[dict] = None
 
+    class Config:
+        extra = "ignore"
 
 # ======================================================
-# Wallet (from Wallet Service)
+# Wallet & Transaction
 # ======================================================
-
 class CompositeWallet(BaseModel):
     id: UUID
     user_id: UUID
     balance: Decimal
-    created_at: datetime
-    updated_at: datetime
-
-
-# ======================================================
-# Transaction (from Transaction Service)
-# ======================================================
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
 class CompositeTransaction(BaseModel):
     id: UUID
-
     buyer: CompositeUser
     seller: CompositeUser
-
     item: CompositeItem
-
     order_type: str
     title_snapshot: str
     price_snapshot: Decimal
-
     status: str
     created_at: datetime
 
-
-# ======================================================
-# DTO for creating a transaction
-# ======================================================
-
 class CompositeTransactionCreate(BaseModel):
-    buyer_id: UUID
-    seller_id: UUID
+    buyer_id: Optional[UUID] = None 
+    seller_id: Optional[UUID] = None 
     item_id: UUID
-
     order_type: str
-    title_snapshot: str
-    price_snapshot: Decimal
+    title_snapshot: Optional[str] = None
+    price_snapshot: Optional[Decimal] = None
