@@ -58,14 +58,15 @@ app.add_middleware(
 ITEM_SELLER_MAP: Dict[UUID, UUID] = {}
 
 # ============================================================
-# HELPER MODELS
+# HELPER MODEL FOR FRONTEND COMPATIBILITY
 # ============================================================
-
-# 1. Frontend Compatibility Model
 class UserProfileFlat(CompositeUser):
     address: Optional[CompositeAddress] = None
 
-# 2. Login Request Model (MOVED HERE TO FIX NAME ERROR)
+
+# ============================================================
+# HELPER MODELS
+# ============================================================
 class GoogleLoginRequest(BaseModel):
     email: str
     username: str
@@ -106,7 +107,6 @@ def upload_file_to_bucket(file: UploadFile) -> str:
         blob_name = f"uploads/{uuid4()}-{file.filename}"
         blob = bucket.blob(blob_name)
         
-        # FIX: Disable caching so users see updates instantly
         blob.cache_control = "no-cache, max-age=0"
         
         blob.upload_from_file(file.file, content_type=file.content_type)
@@ -188,25 +188,13 @@ def update_my_profile(
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    phone = payload.get("phone")
+    # We ignore 'phone' now as requested
     address_data = payload.get("address")
 
-    if not phone:
-        raise HTTPException(status_code=400, detail="phone is required")
     if not address_data:
-        raise HTTPException(status_code=400, detail="address is required")
+        raise HTTPException(status_code=400, detail="Address data is required")
 
-    # 1. Update User Phone
-    try:
-        requests.put(
-            f"{USER_SERVICE_URL}/users/{user_id}",
-            json={"phone": phone},
-            timeout=10
-        ).raise_for_status()
-    except Exception as e:
-        raise HTTPException(502, f"Failed to update phone: {e}")
-
-    # 2. Check for existing address
+    # 1. Check for existing address
     existing_address_id = None
     try:
         check_res = requests.get(f"{USER_SERVICE_URL}/addresses", params={"user_id": user_id}, timeout=10)
@@ -217,7 +205,7 @@ def update_my_profile(
     except Exception:
         pass 
 
-    # 3. Create or Update Address
+    # 2. Create or Update Address ONLY
     final_address = {}
     try:
         addr_payload = {
@@ -228,7 +216,7 @@ def update_my_profile(
         }
 
         if existing_address_id:
-            # UPDATE (PUT)
+            # UPDATE (PUT) - Matches your User Service logic
             update_res = requests.put(
                 f"{USER_SERVICE_URL}/addresses/{existing_address_id}",
                 json=addr_payload,
@@ -248,15 +236,14 @@ def update_my_profile(
             final_address = create_res.json()
 
     except Exception as e:
+        print(f"Address Error: {e}")
         raise HTTPException(502, f"Failed to save address: {e}")
 
     return {
-        "message": "Profile updated successfully",
-        "phone": phone,
+        "message": "Address updated successfully (User info unchanged)",
         "address": final_address
     }
 
-# --- ROBUST ITEM LISTING (No Response Model to prevent crashes) ---
 @app.get("/composite/items")
 def list_composite_items():
     try:
