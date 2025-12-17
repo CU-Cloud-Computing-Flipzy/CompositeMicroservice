@@ -161,6 +161,7 @@ def ensure_wallet_exists(user_id: UUID):
         return None
 
 def create_transaction_helper(data: dict):
+    # This is where the error was happening. 'data' must contain only JSON-serializable types (str, int, float), not UUID objects.
     res = requests.post(f"{TRANSACTION_SERVICE_URL}/transactions", json=data, timeout=10)
     res.raise_for_status()
     return res.json()
@@ -232,8 +233,7 @@ def update_my_profile(
         }
 
         if existing_address_id:
-            # UPDATE (PUT/PATCH depending on service)
-            # Using PUT here as default, or PATCH if partial updates allowed
+            # UPDATE (PUT)
             update_res = requests.put(
                 f"{USER_SERVICE_URL}/addresses/{existing_address_id}",
                 json=addr_payload,
@@ -253,7 +253,6 @@ def update_my_profile(
             final_address = create_res.json()
 
     except Exception as e:
-        # If Address fails, we DO want to raise an error
         raise HTTPException(502, f"Failed to save address: {e}")
 
     return {
@@ -314,7 +313,6 @@ def login_with_google(login: GoogleLoginRequest):
     email_q = quote(login.email)
     res = httpx.get(f"{USER_SERVICE_URL}/users/by_email/{email_q}")
     if res.status_code == 200:
-        # Use helper to potentially fetch address if needed (or just plain user)
         user = UserProfileFlat(**res.json())
     else:
         new_user = {
@@ -489,10 +487,11 @@ def create_composite_transaction(
     ensure_wallet_exists(UUID(buyer_id))
     ensure_wallet_exists(UUID(seller_id))
 
+    # FIX: Casting everything to string to prevent JSON serialization error
     tx_payload = {
-        "buyer_id": buyer_id,
-        "seller_id": seller_id,
-        "item_id": payload.item_id,
+        "buyer_id": str(buyer_id),
+        "seller_id": str(seller_id),
+        "item_id": str(payload.item_id),
         "order_type": payload.order_type,
         "title_snapshot": item_data['name'],
         "price_snapshot": str(item_data['price']),
