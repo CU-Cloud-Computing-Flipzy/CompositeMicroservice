@@ -484,30 +484,47 @@ def admin_delete_item(
 
 @app.post("/composite/transactions", response_model=CompositeTransaction)
 def create_composite_transaction(
-    payload: CompositeTransactionCreate, # This payload contains the fluctuated price from React
+    payload: CompositeTransactionCreate,
     claims=Depends(verify_jwt)
 ):
     buyer_id = claims.get("sub")
     if not buyer_id:
         raise HTTPException(401, "Invalid token")
 
-    buyer = get_user_with_address(UUID(buyer_id))
+    # Parallel fetch: buyer profile + item details
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        future_buyer = executor.submit(get_user_with_address, UUID(buyer_id))
+        future_item = executor.submit(
+            requests.get,
+            f"{LISTING_SERVICE_URL}/items/{payload.item_id}",
+            5
+        )
 
-    item_res = requests.get(
-        f"{LISTING_SERVICE_URL}/items/{payload.item_id}",
-        timeout=5
-    )
+        buyer = future_buyer.result()
+        item_res = future_item.result()
+
     if item_res.status_code != 200:
         raise HTTPException(404, "Item not found")
 
     item_data = item_res.json()
     item = CompositeItem(**item_data)
-    seller_id = item.owner_user_id
-    
-    seller = get_user_with_address(seller_id)
 
-    ensure_wallet_exists(UUID(buyer_id))
-    ensure_wallet_exists(seller_id)
+    seller_id = item.owner_user_id
+    if not seller_id:
+        raise HTTPException(422, "Item missing owner_user_id")
+
+    if str(seller_id) == str(buyer_id):
+        raise HTTPException(400, "Cannot purchase your own item")
+
+    # Parallel fetch: seller profile + wallet checks
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        future_seller = executor.submit(get_user_with_address, seller_id)
+        future_wallet_buyer = executor.submit(ensure_wallet_exists, UUID(buyer_id))
+        future_wallet_seller = executor.submit(ensure_wallet_exists, seller_id)
+
+        seller = future_seller.result()
+        future_wallet_buyer.result()
+        future_wallet_seller.result()
 
     final_price = payload.price_snapshot if payload.price_snapshot is not None else item.price
 
@@ -517,7 +534,7 @@ def create_composite_transaction(
         "item_id": str(payload.item_id),
         "order_type": payload.order_type,
         "title_snapshot": item.name,
-        "price_snapshot": str(final_price), 
+        "price_snapshot": str(final_price),
     }
 
     tx_raw = create_transaction_helper(tx_payload)
