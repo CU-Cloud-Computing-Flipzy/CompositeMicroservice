@@ -161,7 +161,6 @@ def ensure_wallet_exists(user_id: UUID):
         return None
 
 def create_transaction_helper(data: dict):
-    # This is where the error was happening. 'data' must contain only JSON-serializable types (str, int, float), not UUID objects.
     res = requests.post(f"{TRANSACTION_SERVICE_URL}/transactions", json=data, timeout=10)
     res.raise_for_status()
     return res.json()
@@ -465,9 +464,6 @@ def admin_delete_item(
 
     return None
 
-# ============================================================
-# UPDATED TRANSACTIONS LOGIC
-# ============================================================
 
 @app.post("/composite/transactions", response_model=CompositeTransaction)
 def create_composite_transaction(
@@ -478,7 +474,6 @@ def create_composite_transaction(
     if not buyer_id:
         raise HTTPException(401, "Invalid token")
 
-    # Mapped 'get_user' -> 'get_user_with_address'
     buyer = get_user_with_address(UUID(buyer_id))
 
     item_res = requests.get(
@@ -491,13 +486,11 @@ def create_composite_transaction(
     item = CompositeItem(**item_res.json())
     seller_id = item.owner_user_id
     
-    # Mapped 'get_user' -> 'get_user_with_address'
     seller = get_user_with_address(seller_id)
 
     ensure_wallet_exists(UUID(buyer_id))
     ensure_wallet_exists(seller_id)
 
-    # Note: Cast IDs to str() to ensure JSON serialization works in create_transaction_helper
     tx_payload = {
         "buyer_id": str(buyer_id),
         "seller_id": str(seller_id),
@@ -507,7 +500,6 @@ def create_composite_transaction(
         "price_snapshot": str(item.price),
     }
 
-    # Mapped 'create_transaction' -> 'create_transaction_helper'
     tx_raw = create_transaction_helper(tx_payload)
 
     return CompositeTransaction(
