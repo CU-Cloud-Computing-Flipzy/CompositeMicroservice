@@ -160,14 +160,9 @@ def ensure_wallet_exists(user_id: UUID):
         return None
 
 def create_transaction_helper(data: dict):
-    try:
-        res = requests.post(f"{TRANSACTION_SERVICE_URL}/transactions", json=data, timeout=10)
-        res.raise_for_status()
-        return res.json()
-    except requests.exceptions.RequestException as e:
-        print(f"TRANSACTION SERVICE ERROR: {e}")
-        # Raising a 502 with specific details helps debugging
-        raise HTTPException(status_code=502, detail=f"Transaction Service unreachable: {str(e)}")
+    res = requests.post(f"{TRANSACTION_SERVICE_URL}/transactions", json=data, timeout=10)
+    res.raise_for_status()
+    return res.json()
 
 
 # ============================================================
@@ -501,7 +496,7 @@ def create_composite_transaction(
         future_item = executor.submit(
             requests.get,
             f"{LISTING_SERVICE_URL}/items/{payload.item_id}",
-            timeout=5
+            5
         )
 
         buyer = future_buyer.result()
@@ -541,36 +536,7 @@ def create_composite_transaction(
         "price_snapshot": str(final_price),
     }
 
-    # 1. CREATE transaction (this was missing)
     tx_raw = create_transaction_helper(tx_payload)
-
-    # 2. If virtual → checkout immediately
-    if payload.order_type == "VIRTUAL":
-        try:
-            checkout_res = requests.post(
-                f"{TRANSACTION_SERVICE_URL}/transactions/{tx_raw['id']}/checkout",
-                timeout=5
-            )
-            checkout_res.raise_for_status()
-
-            # 3. Re-fetch transaction to get full, consistent data
-            tx_raw = requests.get(
-                f"{TRANSACTION_SERVICE_URL}/transactions/{tx_raw['id']}",
-                timeout=5
-            ).json()
-
-            # 4. Delete item
-            try:
-                requests.delete(
-                    f"{LISTING_SERVICE_URL}/items/{payload.item_id}",
-                    timeout=5
-                )
-                print(f"[VIRTUAL] Auto-deleted item {payload.item_id}")
-            except Exception as e:
-                print(f"[VIRTUAL] Item delete warning: {e}")
-
-        except Exception as e:
-            raise HTTPException(502, f"Virtual checkout failed: {e}")
 
     item.price = float(final_price)
 
