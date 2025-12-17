@@ -201,16 +201,19 @@ def update_my_profile(
         "address": created_address
     }
 
-@app.get("/composite/items", response_model=List[CompositeItem])
+@app.get("/composite/items") 
 def list_composite_items():
     try:
         res = requests.get(f"{LISTING_SERVICE_URL}/items", timeout=5)
         res.raise_for_status()
         items_data = res.json()
-        return [CompositeItem(**item) for item in items_data]
+        
+        print("DEBUG RAW DATA:", items_data) 
+        
+        return items_data 
     except Exception as e:
         print(f"Error fetching items: {e}")
-        return []
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/composite/wallet")
 def get_my_wallet_balance(claims=Depends(verify_jwt)):
