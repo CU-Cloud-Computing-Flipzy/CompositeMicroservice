@@ -160,9 +160,14 @@ def ensure_wallet_exists(user_id: UUID):
         return None
 
 def create_transaction_helper(data: dict):
-    res = requests.post(f"{TRANSACTION_SERVICE_URL}/transactions", json=data, timeout=10)
-    res.raise_for_status()
-    return res.json()
+    try:
+        res = requests.post(f"{TRANSACTION_SERVICE_URL}/transactions", json=data, timeout=10)
+        res.raise_for_status()
+        return res.json()
+    except requests.exceptions.RequestException as e:
+        print(f"TRANSACTION SERVICE ERROR: {e}")
+        # Raising a 502 with specific details helps debugging
+        raise HTTPException(status_code=502, detail=f"Transaction Service unreachable: {str(e)}")
 
 
 # ============================================================
