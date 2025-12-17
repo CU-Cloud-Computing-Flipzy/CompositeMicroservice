@@ -27,7 +27,8 @@ from models.composite_models import (
     CompositeWallet,
     CompositeTransaction,
     CompositeTransactionCreate,
-    # CompositeAddress
+    CompositeDeposit,
+    CompositeAddress
 )
 
 # Configuration

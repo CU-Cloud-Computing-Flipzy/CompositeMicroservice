@@ -31,7 +31,7 @@ class CompositeUser(BaseModel):
     updated_at: Optional[datetime] = None
 
 # ======================================================
-# Profile Response (User + Address)
+# Profile Response
 # ======================================================
 class CompositeProfileResponse(BaseModel):
     user: CompositeUser
@@ -80,7 +80,7 @@ class CompositeItem(BaseModel):
         extra = "ignore"
 
 # ======================================================
-# Wallet & Transaction
+# Wallet & Deposit
 # ======================================================
 class CompositeWallet(BaseModel):
     id: UUID
@@ -89,6 +89,12 @@ class CompositeWallet(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
+class CompositeDeposit(BaseModel):
+    amount: Decimal
+
+# ======================================================
+# Transaction
+# ======================================================
 class CompositeTransaction(BaseModel):
     id: UUID
     buyer: CompositeUser
