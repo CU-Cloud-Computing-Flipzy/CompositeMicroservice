@@ -486,47 +486,44 @@ def create_composite_transaction(
     payload: CompositeTransactionCreate,
     claims=Depends(verify_jwt)
 ):
-
     buyer_id = claims.get("sub")
     if not buyer_id:
-        raise HTTPException(status_code=401, detail="Invalid token")
+        raise HTTPException(401, "Invalid token")
 
+    # Parallel fetch: buyer profile + item details
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        future_buyer = executor.submit(get_user_with_address, UUID(buyer_id))
+        future_item = executor.submit(
+            requests.get,
+            f"{LISTING_SERVICE_URL}/items/{payload.item_id}",
+            timeout=5
+        )
 
-    try:
-        buyer = get_user_with_address(UUID(buyer_id))
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch buyer profile: {e}")
+        buyer = future_buyer.result()
+        item_res = future_item.result()
 
-    try:
-        item_res = requests.get(f"{LISTING_SERVICE_URL}/items/{payload.item_id}", timeout=10)
-        if item_res.status_code != 200:
-            raise HTTPException(status_code=404, detail="Item not found")
-        item_data = item_res.json()
-        item = CompositeItem(**item_data)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch item: {e}")
+    if item_res.status_code != 200:
+        raise HTTPException(404, "Item not found")
 
+    item_data = item_res.json()
+    item = CompositeItem(**item_data)
 
     seller_id = item.owner_user_id
     if not seller_id:
-        raise HTTPException(status_code=422, detail="Item missing owner_user_id")
+        raise HTTPException(422, "Item missing owner_user_id")
 
     if str(seller_id) == str(buyer_id):
-        raise HTTPException(status_code=400, detail="Cannot purchase your own item")
+        raise HTTPException(400, "Cannot purchase your own item")
 
-    try:
-        seller = get_user_with_address(seller_id)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch seller profile: {e}")
+    # Parallel fetch: seller profile + wallet checks
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        future_seller = executor.submit(get_user_with_address, seller_id)
+        future_wallet_buyer = executor.submit(ensure_wallet_exists, UUID(buyer_id))
+        future_wallet_seller = executor.submit(ensure_wallet_exists, seller_id)
 
-    try:
-        ensure_wallet_exists(UUID(buyer_id))
-        ensure_wallet_exists(seller_id)
-    except Exception as e:
-        print(f"[WARN] ensure_wallet_exists failed: {e}")
-
+        seller = future_seller.result()
+        future_wallet_buyer.result()
+        future_wallet_seller.result()
 
     final_price = payload.price_snapshot if payload.price_snapshot is not None else item.price
 
@@ -534,71 +531,26 @@ def create_composite_transaction(
         "buyer_id": str(buyer_id),
         "seller_id": str(seller_id),
         "item_id": str(payload.item_id),
-        "order_type": payload.order_type,        
+        "order_type": payload.order_type,
         "title_snapshot": item.name,
         "price_snapshot": str(final_price),
     }
 
-    try:
-        tx_res = requests.post(
-            f"{TRANSACTION_SERVICE_URL}/transactions",
-            json=tx_payload,
-            timeout=15
-        )
-        tx_res.raise_for_status()
-        tx_raw = tx_res.json()
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Transaction create failed: {e}")
+    tx_raw = create_transaction_helper(tx_payload)
 
-    if payload.order_type == "VIRTUAL":
-        try:
-            checkout_res = requests.post(
-                f"{TRANSACTION_SERVICE_URL}/transactions/{tx_raw['id']}/checkout",
-                timeout=15
-            )
-            checkout_res.raise_for_status()
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Virtual checkout failed: {e}")
-
-        try:
-            tx_get = requests.get(
-                f"{TRANSACTION_SERVICE_URL}/transactions/{tx_raw['id']}",
-                timeout=10
-            )
-            if tx_get.status_code == 200:
-                tx_raw = tx_get.json()
-        except Exception as e:
-            print(f"[WARN] Could not re-fetch tx after checkout: {e}")
-
-        try:
-            del_res = requests.delete(f"{LISTING_SERVICE_URL}/items/{payload.item_id}", timeout=15)
-
-            if del_res.status_code not in (200, 204, 404):
-                print(f"[VIRTUAL] delete item failed {del_res.status_code}: {del_res.text}")
-
-            else:
-                print(f"[VIRTUAL] item {payload.item_id} deleted (status {del_res.status_code})")
-
-        except Exception as e:
-            print(f"[VIRTUAL] delete item exception: {e}")
-
-    try:
-        item.price = float(final_price)
-    except Exception:
-        pass
+    item.price = float(final_price)
 
     return CompositeTransaction(
         id=tx_raw["id"],
         buyer=buyer,
         seller=seller,
         item=item,
-        order_type=tx_raw.get("order_type", payload.order_type),
-        title_snapshot=tx_raw.get("title_snapshot", item.name),
-        price_snapshot=Decimal(str(tx_raw.get("price_snapshot", str(final_price)))),
-        status=tx_raw.get("status", "PENDING"),
-        created_at=tx_raw.get("created_at", datetime.utcnow().isoformat()),
+        order_type=tx_raw["order_type"],
+        title_snapshot=tx_raw["title_snapshot"],
+        price_snapshot=Decimal(tx_raw["price_snapshot"]),
+        status=tx_raw["status"],
+        created_at=tx_raw["created_at"],
     )
-
 
 @app.post("/composite/transactions/{tx_id}/checkout")
 def checkout_real_transaction(
@@ -609,40 +561,42 @@ def checkout_real_transaction(
     if not user_id:
         raise HTTPException(401, "Invalid token")
 
+    # 1. Get Transaction Details
     try:
-        res = requests.get(f"{TRANSACTION_SERVICE_URL}/transactions/{tx_id}", timeout=5)
+        res = requests.get(
+            f"{TRANSACTION_SERVICE_URL}/transactions/{tx_id}",
+            timeout=5
+        )
         res.raise_for_status()
         tx = res.json()
     except Exception:
-        raise HTTPException(404, "Transaction record not found")
+        raise HTTPException(404, "Transaction not found")
 
     if tx.get("buyer_id") != user_id:
-        raise HTTPException(403, "Only the buyer can checkout this transaction")
+        raise HTTPException(
+            status_code=403,
+            detail="Only buyer can checkout this transaction"
+        )
 
+    # 2. Perform Checkout (Pay)
     try:
-        checkout_res = requests.post(f"{TRANSACTION_SERVICE_URL}/transactions/{tx_id}/checkout", timeout=10)
+        checkout_res = requests.post(
+            f"{TRANSACTION_SERVICE_URL}/transactions/{tx_id}/checkout",
+            timeout=5
+        )
         checkout_res.raise_for_status()
-        checkout_data = checkout_res.json()
     except Exception as e:
-        raise HTTPException(502, f"Payment/Checkout failed: {e}")
-
+        raise HTTPException(502, f"Checkout failed: {e}")
 
     item_id = tx.get("item_id")
     if item_id:
         try:
-
-            del_res = requests.delete(f"{LISTING_SERVICE_URL}/items/{item_id}", timeout=10)
-            
-            if del_res.status_code == 404:
-                print(f"Item {item_id} already removed.")
-            else:
-                del_res.raise_for_status()
-                print(f"SUCCESS: Virtual item {item_id} force-deleted after checkout.")
-                
+            requests.delete(f"{LISTING_SERVICE_URL}/items/{item_id}", timeout=5)
+            print(f"Auto-deleted item {item_id} after purchase")
         except Exception as e:
-            print(f"CRITICAL ERROR: Failed to force-delete purchased item {item_id}: {e}")
+            print(f"Warning: Failed to auto-delete item: {e}")
 
-    return checkout_data
+    return checkout_res.json()
 
 if __name__ == "__main__":
     import uvicorn
