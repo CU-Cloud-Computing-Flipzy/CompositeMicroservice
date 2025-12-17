@@ -27,8 +27,6 @@ from models.composite_models import (
     CompositeWallet,
     CompositeTransaction,
     CompositeTransactionCreate,
-    CompositeDeposit,
-    CompositeAddress
 )
 
 # Configuration
@@ -48,7 +46,11 @@ app = FastAPI(title="Composite Service")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "*", 
+        "https://storage.googleapis.com",  
+        "https://storage.googleapis.com/flipzy-frontend"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -56,10 +58,6 @@ app.add_middleware(
 
 ITEM_SELLER_MAP: Dict[UUID, UUID] = {}
 
-
-# ============================================================
-# AUTH & HELPERS
-# ============================================================
 
 def create_jwt(user_id: str, role: str):
     expire = datetime.utcnow() + timedelta(minutes=TOKEN_EXPIRE_MINUTES)
@@ -76,8 +74,45 @@ def require_admin(claims: dict):
     if claims.get("role") != "admin":
         raise HTTPException(403, "Admin role required")
 
+def get_user(user_id: UUID) -> CompositeUser:
+    try:
+        res = requests.get(f"{USER_SERVICE_URL}/users/{user_id}", timeout=5)
+        res.raise_for_status()
+        return CompositeUser(**res.json())
+    except Exception:
+        raise HTTPException(404, "User not found")
+
+def get_item(item_id: UUID, seller_id: UUID) -> CompositeItem:
+    try:
+        res = requests.get(f"{LISTING_SERVICE_URL}/items/{item_id}", timeout=5)
+        res.raise_for_status()
+        return CompositeItem(**res.json())
+    except Exception:
+        raise HTTPException(404, "Item not found")
+
+def create_transaction(data: dict):
+    res = requests.post(f"{TRANSACTION_SERVICE_URL}/transactions", json=data)
+    res.raise_for_status()
+    return res.json()
+
+def ensure_wallet_exists(user_id: UUID):
+    try:
+        res = requests.get(f"{TRANSACTION_SERVICE_URL}/wallets", params={"user_id": str(user_id)})
+        wallets = res.json()
+        if wallets:
+            return wallets[0]
+        create_res = requests.post(f"{TRANSACTION_SERVICE_URL}/wallets", json={"user_id": str(user_id)})
+        if create_res.status_code == 400:
+             res = requests.get(f"{TRANSACTION_SERVICE_URL}/wallets", params={"user_id": str(user_id)})
+             return res.json()[0]
+        create_res.raise_for_status()
+        return create_res.json()
+    except Exception as e:
+        print(f"Error ensuring wallet for {user_id}: {e}")
+        return None
+
 def upload_file_to_bucket(file: UploadFile) -> str:
-    """Uploads file to GCS bucket with NO-CACHE metadata."""
+    """Uploads file to GCS bucket and returns public URL."""
     if not storage:
         print("GCS library not found. Returning fake URL.")
         return f"https://fake-storage.com/{file.filename}"
@@ -89,57 +124,14 @@ def upload_file_to_bucket(file: UploadFile) -> str:
         blob_name = f"uploads/{uuid4()}-{file.filename}"
         blob = bucket.blob(blob_name)
         
-        # FIX: Disable caching so users see updates instantly
         blob.cache_control = "no-cache, max-age=0"
         
         blob.upload_from_file(file.file, content_type=file.content_type)
+        
         return f"https://storage.googleapis.com/{BUCKET_NAME}/{blob_name}"
     except Exception as e:
         print(f"GCS Upload Error: {e}")
         return f"https://upload-failed.com/{file.filename}"
-
-def get_user_with_address(user_id: UUID) -> CompositeUser:
-    """Fetches User + Address and merges them."""
-    try:
-        res = requests.get(f"{USER_SERVICE_URL}/users/{user_id}", timeout=10)
-        res.raise_for_status()
-        user_data = res.json()
-
-        try:
-            addr_res = requests.get(f"{USER_SERVICE_URL}/addresses", params={"user_id": str(user_id)}, timeout=5)
-            if addr_res.status_code == 200:
-                addresses = addr_res.json()
-                if addresses and len(addresses) > 0:
-                    user_data["address"] = addresses[0]
-        except Exception as e:
-            print(f"Address fetch warning: {e}")
-
-        return CompositeUser(**user_data)
-    except Exception:
-        raise HTTPException(404, "User not found")
-
-def ensure_wallet_exists(user_id: UUID):
-    try:
-        res = requests.get(f"{TRANSACTION_SERVICE_URL}/wallets", params={"user_id": str(user_id)}, timeout=10)
-        wallets = res.json()
-        if wallets:
-            return wallets[0]
-        
-        create_res = requests.post(f"{TRANSACTION_SERVICE_URL}/wallets", json={"user_id": str(user_id)}, timeout=10)
-        if create_res.status_code == 400:
-             res = requests.get(f"{TRANSACTION_SERVICE_URL}/wallets", params={"user_id": str(user_id)}, timeout=10)
-             return res.json()[0]
-        create_res.raise_for_status()
-        return create_res.json()
-    except Exception as e:
-        print(f"Error ensuring wallet: {e}")
-        return None
-
-def create_transaction_helper(data: dict):
-    res = requests.post(f"{TRANSACTION_SERVICE_URL}/transactions", json=data, timeout=10)
-    res.raise_for_status()
-    return res.json()
-
 
 @app.get("/")
 def root():
@@ -150,8 +142,7 @@ def get_current_user_profile(claims=Depends(verify_jwt)):
     user_id = claims.get("sub")
     if not user_id:
         raise HTTPException(400, "Invalid token claims")
-    return get_user_with_address(UUID(user_id))
-
+    return get_user(UUID(user_id))
 @app.post("/composite/profile")
 def update_my_profile(
     payload: dict = Body(...),
@@ -162,79 +153,65 @@ def update_my_profile(
         raise HTTPException(status_code=401, detail="Invalid token")
 
     phone = payload.get("phone")
-    address_data = payload.get("address")
+    address = payload.get("address")
 
     if not phone:
         raise HTTPException(status_code=400, detail="phone is required")
-    if not address_data:
+    if not address:
         raise HTTPException(status_code=400, detail="address is required")
 
     try:
-        requests.put(
+        user_res = requests.put(
             f"{USER_SERVICE_URL}/users/{user_id}",
             json={"phone": phone},
-            timeout=10
-        ).raise_for_status()
+            timeout=5
+        )
+        user_res.raise_for_status()
     except Exception as e:
-        raise HTTPException(502, f"Failed to update phone: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to update user phone: {e}"
+        )
 
-    existing_address_id = None
     try:
-        check_res = requests.get(f"{USER_SERVICE_URL}/addresses", params={"user_id": user_id}, timeout=10)
-        if check_res.status_code == 200:
-            addresses = check_res.json()
-            if addresses:
-                existing_address_id = addresses[0]['id']
-    except Exception:
-        pass 
-
-    final_address = {}
-    try:
-        addr_payload = {
-            "country": address_data.get("country"),
-            "city": address_data.get("city"),
-            "street": address_data.get("street"),
-            "postal_code": address_data.get("postal_code")
-        }
-
-        if existing_address_id:
-            # UPDATE
-            update_res = requests.put(
-                f"{USER_SERVICE_URL}/addresses/{existing_address_id}",
-                json=addr_payload,
-                timeout=10
-            )
-            update_res.raise_for_status()
-            final_address = update_res.json()
-        else:
-            # CREATE
-            addr_payload["user_id"] = user_id
-            create_res = requests.post(
-                f"{USER_SERVICE_URL}/addresses",
-                json=addr_payload,
-                timeout=10
-            )
-            create_res.raise_for_status()
-            final_address = create_res.json()
-
+        addr_res = requests.post(
+            f"{USER_SERVICE_URL}/addresses",
+            json={
+                "user_id": user_id,
+                "country": address.get("country"),
+                "city": address.get("city"),
+                "street": address.get("street"),
+                "postal_code": address.get("postal_code"),
+            },
+            timeout=5
+        )
+        addr_res.raise_for_status()
+        created_address = addr_res.json()
     except Exception as e:
-        raise HTTPException(502, f"Failed to save address: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to create address: {e}"
+        )
 
     return {
         "message": "Profile updated successfully",
         "phone": phone,
-        "address": final_address
+        "address": created_address
     }
 
 @app.get("/composite/items")
 def list_composite_items():
     try:
-        res = requests.get(f"{LISTING_SERVICE_URL}/items", timeout=10)
+        res = requests.get(f"{LISTING_SERVICE_URL}/items", timeout=5)
         res.raise_for_status()
+        
         items_data = res.json()
+        print("DEBUG RAW ITEM DATA:", items_data) 
         return items_data
+
     except Exception as e:
         print(f"Error fetching items: {e}")
+
         return []
 
 @app.get("/composite/wallet")
@@ -249,12 +226,15 @@ def get_my_wallet_balance(claims=Depends(verify_jwt)):
 def get_my_transactions(claims=Depends(verify_jwt)):
     user_id = claims.get("sub")
     try:
-        res = requests.get(f"{TRANSACTION_SERVICE_URL}/transactions", params={"buyer_id": user_id}, timeout=10)
+        res = requests.get(f"{TRANSACTION_SERVICE_URL}/transactions", params={"buyer_id": user_id})
         res.raise_for_status()
         return res.json()
     except Exception as e:
         print(f"History Error: {e}")
         return []
+
+class CompositeDeposit(BaseModel):
+    amount: Decimal
 
 @app.post("/composite/wallet/deposit")
 def deposit_money(payload: CompositeDeposit, claims=Depends(verify_jwt)):
@@ -265,13 +245,19 @@ def deposit_money(payload: CompositeDeposit, claims=Depends(verify_jwt)):
     try:
         res = requests.post(
             f"{TRANSACTION_SERVICE_URL}/wallets/{wallet['id']}/deposit",
-            json={"amount": str(payload.amount)},
-            timeout=10
+            json={"amount": str(payload.amount)}
         )
         res.raise_for_status()
         return res.json()
     except Exception as e:
         raise HTTPException(500, "Deposit failed")
+
+class GoogleLoginRequest(BaseModel):
+    email: str
+    username: str
+    full_name: Optional[str] = None
+    avatar_url: Optional[str] = None
+    google_token: str
 
 @app.post("/login/google")
 def login_with_google(login: GoogleLoginRequest):
@@ -299,6 +285,7 @@ def admin_area(claims=Depends(verify_jwt)):
     require_admin(claims)
     return {"message": "Admin access granted"}
 
+
 @app.post("/composite/items/create", response_model=CompositeItem)
 def create_item_from_frontend(
     seller_id: str = Form(...),
@@ -315,12 +302,14 @@ def create_item_from_frontend(
 
     if file:
         real_url = upload_file_to_bucket(file)
+        
         media_payload = {
             "url": real_url,
             "type": "image",
             "alt_text": name,
             "is_primary": True
         }
+        
         try:
             media_res = httpx.post(f"{LISTING_SERVICE_URL}/media", json=media_payload)
             if media_res.status_code == 201:
@@ -329,7 +318,7 @@ def create_item_from_frontend(
             else:
                 print(f"Media DB creation failed: {media_res.text}")
         except Exception as e:
-            print(f"Media Service Error: {e}")
+            print(f"Media Service Connection Error: {e}")
 
     listing_payload = {
         "name": name,
@@ -342,11 +331,18 @@ def create_item_from_frontend(
         "media": media_list,        
     }
 
+    print(f"Sending to Listing Service: {listing_payload}") 
+
     res = httpx.post(f"{LISTING_SERVICE_URL}/items", json=listing_payload)
+    
     if res.status_code not in (200, 201):
+        print(f"Listing Service Error: {res.text}")
         raise HTTPException(res.status_code, res.text)
 
     created = res.json()
+    item_id = UUID(created["id"])
+    ITEM_SELLER_MAP[item_id] = UUID(seller_id)
+    
     return CompositeItem(**created)
 
 @app.delete("/composite/items/{item_id}", status_code=204)
@@ -359,17 +355,26 @@ def delete_my_item(
         raise HTTPException(401, "Invalid token")
 
     try:
-        res = requests.get(f"{LISTING_SERVICE_URL}/items/{item_id}", timeout=10)
+        res = requests.get(
+            f"{LISTING_SERVICE_URL}/items/{item_id}",
+            timeout=5
+        )
         res.raise_for_status()
         item = res.json()
     except Exception:
         raise HTTPException(404, "Item not found")
 
     if item.get("owner_user_id") != user_id:
-        raise HTTPException(403, "You can only delete your own items")
+        raise HTTPException(
+            status_code=403,
+            detail="You can only delete your own items"
+        )
 
     try:
-        del_res = requests.delete(f"{LISTING_SERVICE_URL}/items/{item_id}", timeout=10)
+        del_res = requests.delete(
+            f"{LISTING_SERVICE_URL}/items/{item_id}",
+            timeout=5
+        )
         del_res.raise_for_status()
     except Exception as e:
         raise HTTPException(502, f"Failed to delete item: {e}")
@@ -386,18 +391,31 @@ def update_my_item(
     if not user_id:
         raise HTTPException(401, "Invalid token")
 
+    # 1. Check if item exists
     try:
-        res = requests.get(f"{LISTING_SERVICE_URL}/items/{item_id}", timeout=10)
+        res = requests.get(
+            f"{LISTING_SERVICE_URL}/items/{item_id}",
+            timeout=5
+        )
         res.raise_for_status()
         item = res.json()
     except Exception:
         raise HTTPException(404, "Item not found")
 
+    # 2. Verify Ownership
     if item.get("owner_user_id") != user_id:
-        raise HTTPException(403, "You can only update your own items")
+        raise HTTPException(
+            status_code=403,
+            detail="You can only update your own items"
+        )
 
+    # 3. Perform Update
     try:
-        update_res = requests.patch(f"{LISTING_SERVICE_URL}/items/{item_id}", json=payload, timeout=10)
+        update_res = requests.patch(
+            f"{LISTING_SERVICE_URL}/items/{item_id}",
+            json=payload,
+            timeout=5
+        )
         update_res.raise_for_status()
         updated_item = update_res.json()
     except Exception as e:
@@ -413,7 +431,10 @@ def admin_delete_item(
     require_admin(claims)
 
     try:
-        res = requests.get(f"{LISTING_SERVICE_URL}/items/{item_id}", timeout=10)
+        res = requests.get(
+            f"{LISTING_SERVICE_URL}/items/{item_id}",
+            timeout=5
+        )
         if res.status_code == 404:
             raise HTTPException(404, "Item not found")
         res.raise_for_status()
@@ -423,7 +444,10 @@ def admin_delete_item(
         raise HTTPException(502, f"Failed to fetch item: {e}")
 
     try:
-        del_res = requests.delete(f"{LISTING_SERVICE_URL}/items/{item_id}", timeout=10)
+        del_res = requests.delete(
+            f"{LISTING_SERVICE_URL}/items/{item_id}",
+            timeout=5
+        )
         del_res.raise_for_status()
     except Exception as e:
         raise HTTPException(502, f"Failed to delete item: {e}")
@@ -439,15 +463,18 @@ def create_composite_transaction(
     if not buyer_id:
         raise HTTPException(401, "Invalid token")
 
-    buyer = get_user_with_address(UUID(buyer_id))
+    buyer = get_user(UUID(buyer_id))
 
-    item_res = requests.get(f"{LISTING_SERVICE_URL}/items/{payload.item_id}", timeout=10)
+    item_res = requests.get(
+        f"{LISTING_SERVICE_URL}/items/{payload.item_id}",
+        timeout=5
+    )
     if item_res.status_code != 200:
         raise HTTPException(404, "Item not found")
 
-    item_data = item_res.json()
-    seller_id = item_data['owner_user_id']
-    seller = get_user_with_address(UUID(seller_id))
+    item = CompositeItem(**item_res.json())
+    seller_id = item.owner_user_id
+    seller = get_user(UUID(seller_id))
 
     ensure_wallet_exists(UUID(buyer_id))
     ensure_wallet_exists(UUID(seller_id))
@@ -457,42 +484,24 @@ def create_composite_transaction(
         "seller_id": seller_id,
         "item_id": payload.item_id,
         "order_type": payload.order_type,
-        "title_snapshot": item_data['name'],
-        "price_snapshot": str(item_data['price']),
+        "title_snapshot": item.name,
+        "price_snapshot": str(item.price),
     }
 
-    tx_raw = create_transaction_helper(tx_payload)
-
-    # Convert composite item
-    try:
-        comp_item = CompositeItem(**item_data)
-    except:
-        # Fallback if validation fails
-        comp_item = CompositeItem(
-            id=item_data['id'], 
-            owner_user_id=item_data['owner_user_id'],
-            name=item_data['name'], 
-            description=item_data.get('description', ''), 
-            price=item_data['price'], 
-            status=item_data.get('status','active'),
-            condition=item_data.get('condition','new'),
-            category={"id": uuid4(), "name": "Uncategorized", "description": "", "created_at": datetime.now(), "updated_at": datetime.now()},
-            media=[],
-            created_at=datetime.now(), 
-            updated_at=datetime.now()
-        )
+    tx_raw = create_transaction(tx_payload)
 
     return CompositeTransaction(
         id=tx_raw["id"],
         buyer=buyer,
         seller=seller,
-        item=comp_item,
+        item=item,
         order_type=tx_raw["order_type"],
         title_snapshot=tx_raw["title_snapshot"],
         price_snapshot=Decimal(tx_raw["price_snapshot"]),
         status=tx_raw["status"],
         created_at=tx_raw["created_at"],
     )
+
 
 @app.post("/composite/transactions/{tx_id}/checkout")
 def checkout_real_transaction(
@@ -504,17 +513,26 @@ def checkout_real_transaction(
         raise HTTPException(401, "Invalid token")
 
     try:
-        res = requests.get(f"{TRANSACTION_SERVICE_URL}/transactions/{tx_id}", timeout=10)
+        res = requests.get(
+            f"{TRANSACTION_SERVICE_URL}/transactions/{tx_id}",
+            timeout=5
+        )
         res.raise_for_status()
         tx = res.json()
     except Exception:
         raise HTTPException(404, "Transaction not found")
 
     if tx.get("buyer_id") != user_id:
-        raise HTTPException(403, "Only buyer can checkout this transaction")
+        raise HTTPException(
+            status_code=403,
+            detail="Only buyer can checkout this transaction"
+        )
 
     try:
-        checkout_res = requests.post(f"{TRANSACTION_SERVICE_URL}/transactions/{tx_id}/checkout", timeout=10)
+        checkout_res = requests.post(
+            f"{TRANSACTION_SERVICE_URL}/transactions/{tx_id}/checkout",
+            timeout=5
+        )
         checkout_res.raise_for_status()
     except Exception as e:
         raise HTTPException(502, f"Checkout failed: {e}")
