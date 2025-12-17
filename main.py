@@ -523,6 +523,7 @@ def checkout_real_transaction(
     if not user_id:
         raise HTTPException(401, "Invalid token")
 
+    # 1. Get Transaction Details
     try:
         res = requests.get(
             f"{TRANSACTION_SERVICE_URL}/transactions/{tx_id}",
@@ -539,6 +540,7 @@ def checkout_real_transaction(
             detail="Only buyer can checkout this transaction"
         )
 
+    # 2. Perform Checkout (Pay)
     try:
         checkout_res = requests.post(
             f"{TRANSACTION_SERVICE_URL}/transactions/{tx_id}/checkout",
@@ -547,6 +549,14 @@ def checkout_real_transaction(
         checkout_res.raise_for_status()
     except Exception as e:
         raise HTTPException(502, f"Checkout failed: {e}")
+
+    item_id = tx.get("item_id")
+    if item_id:
+        try:
+            requests.delete(f"{LISTING_SERVICE_URL}/items/{item_id}", timeout=5)
+            print(f"Auto-deleted item {item_id} after purchase")
+        except Exception as e:
+            print(f"Warning: Failed to auto-delete item: {e}")
 
     return checkout_res.json()
 
