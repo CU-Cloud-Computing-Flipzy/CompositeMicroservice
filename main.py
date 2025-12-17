@@ -502,6 +502,12 @@ def create_composite_transaction(
 
     tx_raw = create_transaction_helper(tx_payload)
 
+    if tx_raw.get("status") == "COMPLETED" and tx_raw.get("order_type") == "VIRTUAL":
+            try:
+                requests.delete(f"{LISTING_SERVICE_URL}/items/{payload.item_id}", timeout=5)
+            except Exception as e:
+                print(f"Failed to auto-delete virtual item: {e}")
+
     return CompositeTransaction(
         id=tx_raw["id"],
         buyer=buyer,
