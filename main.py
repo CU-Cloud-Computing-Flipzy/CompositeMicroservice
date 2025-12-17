@@ -484,7 +484,7 @@ def admin_delete_item(
 
 @app.post("/composite/transactions", response_model=CompositeTransaction)
 def create_composite_transaction(
-    payload: CompositeTransactionCreate,
+    payload: CompositeTransactionCreate, # This payload contains the fluctuated price from React
     claims=Depends(verify_jwt)
 ):
     buyer_id = claims.get("sub")
@@ -500,7 +500,8 @@ def create_composite_transaction(
     if item_res.status_code != 200:
         raise HTTPException(404, "Item not found")
 
-    item = CompositeItem(**item_res.json())
+    item_data = item_res.json()
+    item = CompositeItem(**item_data)
     seller_id = item.owner_user_id
     
     seller = get_user_with_address(seller_id)
@@ -508,22 +509,20 @@ def create_composite_transaction(
     ensure_wallet_exists(UUID(buyer_id))
     ensure_wallet_exists(seller_id)
 
+    final_price = payload.price_snapshot if payload.price_snapshot is not None else item.price
+
     tx_payload = {
         "buyer_id": str(buyer_id),
         "seller_id": str(seller_id),
         "item_id": str(payload.item_id),
         "order_type": payload.order_type,
         "title_snapshot": item.name,
-        "price_snapshot": str(item.price),
+        "price_snapshot": str(final_price), 
     }
 
     tx_raw = create_transaction_helper(tx_payload)
 
-    if tx_raw.get("status") == "COMPLETED" and tx_raw.get("order_type") == "VIRTUAL":
-            try:
-                requests.delete(f"{LISTING_SERVICE_URL}/items/{payload.item_id}", timeout=5)
-            except Exception as e:
-                print(f"Failed to auto-delete virtual item: {e}")
+    item.price = float(final_price)
 
     return CompositeTransaction(
         id=tx_raw["id"],
