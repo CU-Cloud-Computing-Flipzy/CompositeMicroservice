@@ -5,6 +5,13 @@ from decimal import Decimal
 from datetime import datetime
 from pydantic import BaseModel, Field
 
+class CompositeAddress(BaseModel):
+    id: Optional[UUID] = None
+    user_id: Optional[UUID] = None
+    country: str
+    city: str
+    street: str
+    postal_code: Optional[str] = None
 
 # ======================================================
 # Composite User (from User Microservice)
