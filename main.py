@@ -21,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 import jwt
 
-# Import models
+# Import models from your file
 from models.composite_models import (
     CompositeUser,
     CompositeItem,
@@ -58,11 +58,20 @@ app.add_middleware(
 ITEM_SELLER_MAP: Dict[UUID, UUID] = {}
 
 # ============================================================
-# HELPER MODEL FOR FRONTEND COMPATIBILITY
+# HELPER MODELS
 # ============================================================
 
+# 1. Frontend Compatibility Model
 class UserProfileFlat(CompositeUser):
     address: Optional[CompositeAddress] = None
+
+# 2. Login Request Model (MOVED HERE TO FIX NAME ERROR)
+class GoogleLoginRequest(BaseModel):
+    email: str
+    username: str
+    full_name: Optional[str] = None
+    avatar_url: Optional[str] = None
+    google_token: str
 
 
 # ============================================================
@@ -97,7 +106,7 @@ def upload_file_to_bucket(file: UploadFile) -> str:
         blob_name = f"uploads/{uuid4()}-{file.filename}"
         blob = bucket.blob(blob_name)
         
-        # Disable caching for instant updates
+        # FIX: Disable caching so users see updates instantly
         blob.cache_control = "no-cache, max-age=0"
         
         blob.upload_from_file(file.file, content_type=file.content_type)
@@ -187,6 +196,7 @@ def update_my_profile(
     if not address_data:
         raise HTTPException(status_code=400, detail="address is required")
 
+    # 1. Update User Phone
     try:
         requests.put(
             f"{USER_SERVICE_URL}/users/{user_id}",
@@ -196,6 +206,7 @@ def update_my_profile(
     except Exception as e:
         raise HTTPException(502, f"Failed to update phone: {e}")
 
+    # 2. Check for existing address
     existing_address_id = None
     try:
         check_res = requests.get(f"{USER_SERVICE_URL}/addresses", params={"user_id": user_id}, timeout=10)
@@ -206,6 +217,7 @@ def update_my_profile(
     except Exception:
         pass 
 
+    # 3. Create or Update Address
     final_address = {}
     try:
         addr_payload = {
@@ -216,6 +228,7 @@ def update_my_profile(
         }
 
         if existing_address_id:
+            # UPDATE (PUT)
             update_res = requests.put(
                 f"{USER_SERVICE_URL}/addresses/{existing_address_id}",
                 json=addr_payload,
@@ -224,6 +237,7 @@ def update_my_profile(
             update_res.raise_for_status()
             final_address = update_res.json()
         else:
+            # CREATE (POST)
             addr_payload["user_id"] = user_id
             create_res = requests.post(
                 f"{USER_SERVICE_URL}/addresses",
@@ -242,6 +256,7 @@ def update_my_profile(
         "address": final_address
     }
 
+# --- ROBUST ITEM LISTING (No Response Model to prevent crashes) ---
 @app.get("/composite/items")
 def list_composite_items():
     try:
