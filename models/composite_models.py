@@ -6,7 +6,7 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 # ======================================================
-# Address
+# Address 
 # ======================================================
 class CompositeAddress(BaseModel):
     id: Optional[UUID] = Field(None, description="Address ID")
@@ -17,7 +17,7 @@ class CompositeAddress(BaseModel):
     postal_code: Optional[str] = Field(None, min_length=3, max_length=20)
 
 # ======================================================
-# Composite User
+# Composite User 
 # ======================================================
 class CompositeUser(BaseModel):
     id: UUID
@@ -29,13 +29,6 @@ class CompositeUser(BaseModel):
     role: str
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
-
-# ======================================================
-# Profile Response
-# ======================================================
-class CompositeProfileResponse(BaseModel):
-    user: CompositeUser
-    address: Optional[CompositeAddress] = None
 
 # ======================================================
 # Category
