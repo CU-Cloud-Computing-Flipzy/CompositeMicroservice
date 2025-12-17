@@ -49,7 +49,11 @@ app = FastAPI(title="Composite Service")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "https://storage.googleapis.com", 
+        "https://storage.googleapis.com/flipzy-frontend" 
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -195,21 +199,18 @@ def update_my_profile(
         raise HTTPException(status_code=400, detail="address is required")
 
     # 1. Update User Phone (User Service)
-    # Using try/except to prevent 502 crash if phone update fails (e.g. no change)
     try:
-        res = requests.put(
+        res = requests.patch(
             f"{USER_SERVICE_URL}/users/{user_id}",
             json={"phone": phone},
             timeout=10
         )
-        # Note: Your User Service returns 404 if no rows updated (same phone number).
-        # We catch this so we can still proceed to update the address.
         if res.status_code not in (200, 204):
             print(f"Warning: Phone update returned {res.status_code}: {res.text}")
     except Exception as e:
         print(f"Phone Update Non-Critical Error: {e}")
 
-    # 2. Check for existing address (Address Service)
+    # 2. Check for existing address
     existing_address_id = None
     try:
         check_res = requests.get(f"{USER_SERVICE_URL}/addresses", params={"user_id": user_id}, timeout=10)
@@ -231,7 +232,8 @@ def update_my_profile(
         }
 
         if existing_address_id:
-            # UPDATE (PUT)
+            # UPDATE (PUT/PATCH depending on service)
+            # Using PUT here as default, or PATCH if partial updates allowed
             update_res = requests.put(
                 f"{USER_SERVICE_URL}/addresses/{existing_address_id}",
                 json=addr_payload,
@@ -260,7 +262,6 @@ def update_my_profile(
         "address": final_address
     }
 
-# --- ROBUST ITEM LISTING (No Response Model to prevent crashes) ---
 @app.get("/composite/items")
 def list_composite_items():
     try:
@@ -313,6 +314,7 @@ def login_with_google(login: GoogleLoginRequest):
     email_q = quote(login.email)
     res = httpx.get(f"{USER_SERVICE_URL}/users/by_email/{email_q}")
     if res.status_code == 200:
+        # Use helper to potentially fetch address if needed (or just plain user)
         user = UserProfileFlat(**res.json())
     else:
         new_user = {
