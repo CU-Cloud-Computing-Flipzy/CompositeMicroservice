@@ -21,7 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 import jwt
 
-# Import models from your file
+# Import models
 from models.composite_models import (
     CompositeUser,
     CompositeItem,
@@ -58,15 +58,12 @@ app.add_middleware(
 ITEM_SELLER_MAP: Dict[UUID, UUID] = {}
 
 # ============================================================
-# HELPER MODEL FOR FRONTEND COMPATIBILITY
-# ============================================================
-class UserProfileFlat(CompositeUser):
-    address: Optional[CompositeAddress] = None
-
-
-# ============================================================
 # HELPER MODELS
 # ============================================================
+class UserProfileFlat(CompositeUser):
+    """Merges User + Address so frontend can read 'user.address' directly."""
+    address: Optional[CompositeAddress] = None
+
 class GoogleLoginRequest(BaseModel):
     email: str
     username: str
@@ -107,6 +104,7 @@ def upload_file_to_bucket(file: UploadFile) -> str:
         blob_name = f"uploads/{uuid4()}-{file.filename}"
         blob = bucket.blob(blob_name)
         
+        # Disable caching for instant updates
         blob.cache_control = "no-cache, max-age=0"
         
         blob.upload_from_file(file.file, content_type=file.content_type)
@@ -188,13 +186,30 @@ def update_my_profile(
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-    # We ignore 'phone' now as requested
+    phone = payload.get("phone")
     address_data = payload.get("address")
 
+    if not phone:
+        raise HTTPException(status_code=400, detail="phone is required")
     if not address_data:
-        raise HTTPException(status_code=400, detail="Address data is required")
+        raise HTTPException(status_code=400, detail="address is required")
 
-    # 1. Check for existing address
+    # 1. Update User Phone (User Service)
+    # Using try/except to prevent 502 crash if phone update fails (e.g. no change)
+    try:
+        res = requests.put(
+            f"{USER_SERVICE_URL}/users/{user_id}",
+            json={"phone": phone},
+            timeout=10
+        )
+        # Note: Your User Service returns 404 if no rows updated (same phone number).
+        # We catch this so we can still proceed to update the address.
+        if res.status_code not in (200, 204):
+            print(f"Warning: Phone update returned {res.status_code}: {res.text}")
+    except Exception as e:
+        print(f"Phone Update Non-Critical Error: {e}")
+
+    # 2. Check for existing address (Address Service)
     existing_address_id = None
     try:
         check_res = requests.get(f"{USER_SERVICE_URL}/addresses", params={"user_id": user_id}, timeout=10)
@@ -205,7 +220,7 @@ def update_my_profile(
     except Exception:
         pass 
 
-    # 2. Create or Update Address ONLY
+    # 3. Create or Update Address
     final_address = {}
     try:
         addr_payload = {
@@ -216,7 +231,7 @@ def update_my_profile(
         }
 
         if existing_address_id:
-            # UPDATE (PUT) - Matches your User Service logic
+            # UPDATE (PUT)
             update_res = requests.put(
                 f"{USER_SERVICE_URL}/addresses/{existing_address_id}",
                 json=addr_payload,
@@ -236,14 +251,16 @@ def update_my_profile(
             final_address = create_res.json()
 
     except Exception as e:
-        print(f"Address Error: {e}")
+        # If Address fails, we DO want to raise an error
         raise HTTPException(502, f"Failed to save address: {e}")
 
     return {
-        "message": "Address updated successfully (User info unchanged)",
+        "message": "Profile updated successfully",
+        "phone": phone,
         "address": final_address
     }
 
+# --- ROBUST ITEM LISTING (No Response Model to prevent crashes) ---
 @app.get("/composite/items")
 def list_composite_items():
     try:
@@ -296,7 +313,6 @@ def login_with_google(login: GoogleLoginRequest):
     email_q = quote(login.email)
     res = httpx.get(f"{USER_SERVICE_URL}/users/by_email/{email_q}")
     if res.status_code == 200:
-        # Use helper to potentially fetch address if needed (or just plain user)
         user = UserProfileFlat(**res.json())
     else:
         new_user = {
