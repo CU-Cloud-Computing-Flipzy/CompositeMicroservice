@@ -496,7 +496,7 @@ def create_composite_transaction(
         future_item = executor.submit(
             requests.get,
             f"{LISTING_SERVICE_URL}/items/{payload.item_id}",
-            5
+            timeout = 5
         )
 
         buyer = future_buyer.result()
