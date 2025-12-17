@@ -280,10 +280,27 @@ def get_my_wallet_balance(claims=Depends(verify_jwt)):
     return wallet
 
 @app.get("/composite/my-transactions")
-def get_my_transactions(claims=Depends(verify_jwt)):
+def get_my_transactions(
+    buyer_id: Optional[str] = None, 
+    seller_id: Optional[str] = None, 
+    claims=Depends(verify_jwt)
+):
     user_id = claims.get("sub")
+    
+    if buyer_id and buyer_id != user_id:
+        raise HTTPException(403, "Cannot view other users' buyer history")
+    if seller_id and seller_id != user_id:
+        raise HTTPException(403, "Cannot view other users' seller history")
+
+    params = {}
+    if buyer_id: params['buyer_id'] = buyer_id
+    if seller_id: params['seller_id'] = seller_id
+    
+    if not params:
+        params['buyer_id'] = user_id
+
     try:
-        res = requests.get(f"{TRANSACTION_SERVICE_URL}/transactions", params={"buyer_id": user_id}, timeout=10)
+        res = requests.get(f"{TRANSACTION_SERVICE_URL}/transactions", params=params, timeout=10)
         res.raise_for_status()
         return res.json()
     except Exception as e:
